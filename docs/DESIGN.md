@@ -64,8 +64,8 @@ Template for each entry:
 
 ```python
 class DuplicateVerdict(BaseModel):
-    duplicate_of: int | None     # None unless confident
-    related: list[int]           # "possibly related", shown to maintainer
+    duplicate_of: int | None  # None unless confident
+    related: list[int]  # "possibly related", shown to maintainer
     reasoning: str
 ```
 
@@ -96,7 +96,8 @@ class DuplicateVerdict(BaseModel):
 ```python
 class FieldCheck(BaseModel):
     status: Literal["missing", "vague", "ok"]
-    note: str                   # e.g. "says 'latest' instead of a version number"
+    note: str  # e.g. "says 'latest' instead of a version number"
+
 
 class Completeness(BaseModel):
     version: FieldCheck
@@ -150,8 +151,8 @@ class Completeness(BaseModel):
 ```python
 class ReproVerdict(BaseModel):
     status: Literal["reproduced", "not_reproduced", "inconclusive", "not_attempted"]
-    script: str | None          # final script, shown to maintainer
-    evidence_run_id: str | None # which run proves it
+    script: str | None  # final script, shown to maintainer
+    evidence_run_id: str | None  # which run proves it
     explanation: str
 ```
 
@@ -187,11 +188,12 @@ class ReproVerdict(BaseModel):
 
 ```python
 class Citation(BaseModel):
-    source_id: str        # e.g. "issue#412", "docs:config/timeouts"
-    quote: str            # the supporting snippet
+    source_id: str  # e.g. "issue#412", "docs:config/timeouts"
+    quote: str  # the supporting snippet
+
 
 class DraftResponse(BaseModel):
-    body: str             # markdown reply, cites sources inline like [1]
+    body: str  # markdown reply, cites sources inline like [1]
     citations: list[Citation]
     suggested_labels: list[str]
 ```
@@ -288,7 +290,8 @@ class Issue(BaseModel):
     title: str
     body: str
     author: str
-    updated_at: datetime          # snapshot for stale-draft check
+    updated_at: datetime  # snapshot for stale-draft check
+
 
 class Decision(BaseModel):
     action: Literal["approve", "edit", "reject"]
@@ -297,6 +300,7 @@ class Decision(BaseModel):
     approver: str
     decided_at: datetime
 
+
 class TriageState(BaseModel):
     # input — set at webhook time
     repo: str
@@ -304,18 +308,18 @@ class TriageState(BaseModel):
     issue: Issue
 
     # one owner per field — all None until their node runs
-    classification: Classification | None = None     # R1 → R2?, R3, R4, R5, R6
-    duplicates: DuplicateVerdict | None = None       # R2 → R5, R6
-    completeness: Completeness | None = None         # R3 → R4, R5, R6
-    reproduction: ReproVerdict | None = None         # R4 → R5, R6 (raw runs in separate table)
-    draft: DraftResponse | None = None               # R5 → R6
+    classification: Classification | None = None  # R1 → R2?, R3, R4, R5, R6
+    duplicates: DuplicateVerdict | None = None  # R2 → R5, R6
+    completeness: Completeness | None = None  # R3 → R4, R5, R6
+    reproduction: ReproVerdict | None = None  # R4 → R5, R6 (raw runs in separate table)
+    draft: DraftResponse | None = None  # R5 → R6
 
     # R6
     decision: Decision | None = None
-    posted_comment_id: int | None = None             # idempotency
+    posted_comment_id: int | None = None  # idempotency
 
     # cross-cutting
-    errors: list[str] = []                           # graceful degradation
+    errors: list[str] = []  # graceful degradation
 ```
 
 **Design rules**
