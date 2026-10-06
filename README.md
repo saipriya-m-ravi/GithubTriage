@@ -13,6 +13,7 @@ A GitHub App that watches a repository. When a new issue is opened, a LangGraph 
 |---|---|---|
 | Language | Python 3.13+ | Ecosystem default |
 | Orchestration | LangGraph | Explicit state graphs, checkpointing, HITL interrupts built in |
+| LLM | Groq via LangChain (`langchain-groq`) | One-line structured output, automatic LangSmith tracing, provider switch is a one-line change |
 | Schemas | Pydantic | Structured outputs, validation |
 | API | FastAPI | Webhook receiver + approval endpoints |
 | Storage | Postgres + pgvector | One DB for vectors, checkpoints, and app data — less to operate |

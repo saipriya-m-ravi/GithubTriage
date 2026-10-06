@@ -439,6 +439,17 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 - *Not the GitHub MCP server for posting:* it would give the LLM GitHub write tools, breaking "trusted code does privileged work".
 - *Stretch goal (Week 4):* expose GithubTriage **as** an MCP server with **read-only** tools (`search_similar_issues`, `check_completeness`) so maintainers can query it from their editor or assistant.
 
+**LLM client — LangChain (`langchain-groq`), model provider Groq.**
+- *What it gives us:* `with_structured_output(Model)` handles schema conversion, the API call, parsing and Pydantic validation in one line; retries and timeouts are constructor arguments.
+- *Why LangChain rather than the Groq SDK directly:*
+  - **Automatic LangSmith tracing** for every LLM call (Week 3) — no manual instrumentation.
+  - **Provider switching is a one-line change** (`ChatGroq` → `ChatAnthropic` / `ChatOpenAI`, same `.invoke()`), likely since we start on Groq.
+  - Same ecosystem as LangGraph.
+- *Alternatives considered:* the provider SDK directly + Pydantic validation (full control, fewest dependencies, exact request visible); Instructor (structured output on top of SDKs); LiteLLM (one interface for many providers). All are valid; without the tracing and provider-switching needs above, the direct SDK would be a reasonable choice.
+- *Trade-offs accepted:* an extra abstraction layer (harder to see the exact request), frequent version changes, occasional lag on new provider features.
+- *Exit path:* LangGraph doesn't require LangChain — nodes are plain functions. If LangChain gets in the way in a node, that node can call the Groq SDK directly. All client creation lives in `llm.py`, so changes stay in one place.
+- *Model name* comes from config (`GROQ_MODEL`), never hard-coded, so models can be swapped without code changes.
+
 **Observability — LangSmith.**
 - Traces every run: nodes, LLM calls, prompts, tokens, cost, latency; plus datasets and evals.
 - *Why LangSmith over Langfuse:* near-zero setup with LangGraph (environment variables) and **LangGraph Studio** for visualising and stepping through the graph while learning. Langfuse (open source, self-hostable) is an equally valid alternative — use one, not both.
