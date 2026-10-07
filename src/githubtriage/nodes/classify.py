@@ -49,7 +49,9 @@ def classify(state: TriageState) -> dict:
         result = llm.invoke([("system", SYSTEM_PROMPT), ("human", issue_block)])
         return {"classification": result}
     except Exception as e:
-        logger.exception("Classification failed for %s#%s", state.repo, state.issue_number)
+        logger.exception(
+            "Classification failed for %s#%s", state.repo, state.issue_number
+        )
         fallback = Classification(
             type="unclear",
             confidence=0.0,
