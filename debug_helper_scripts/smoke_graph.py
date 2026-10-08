@@ -1,7 +1,10 @@
 from datetime import UTC, datetime
 
+from githubtriage.graph import build_graph
 from githubtriage.models import Issue, TriageState
-from githubtriage.nodes.classify import classify
+
+graph = build_graph()
+print(graph.get_graph().draw_mermaid())
 
 s = TriageState(
     repo="x/y",
@@ -13,7 +16,7 @@ s = TriageState(
         updated_at=datetime.now(UTC),
     ),
 )
-print(classify(s))
-
-# Run as below:
-# uv run python debug_helper_scripts/smoke_classify.py
+result = graph.invoke(s)
+print(f"result is {result}")
+for update in graph.stream(s, stream_mode="updates"):
+    print(update)
