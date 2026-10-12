@@ -539,6 +539,12 @@ Spam/harass under the project's name · phishing links · steal secrets · manip
 | Misinformation | Grounding, citations, HITL |
 | Unbounded consumption | Truncation, rate limits, budget, kill switch |
 
+### 5.6 CLI
+- `cli.py` is a **thin adapter** over the core (`build_graph`): parse args, configure logging, load + validate input, invoke, present output. No triage logic — the FastAPI adapter (slice 7) calls the same core.
+- **stdout = result** (human-readable, or `--json`); **stderr = logs, warnings, errors.**
+- **Exit codes:** `0` = triage ran, **including degraded runs** (`errors` non-empty — they still produce a draft; errors are printed to stderr as warnings); `1` = input file missing or invalid; `2` = wrong usage (argparse).
+- Files are always read/written with an explicit encoding (Windows defaults to a legacy code page). Input files are read as `utf-8-sig`, which also strips the BOM that Windows tools (e.g. PowerShell 5.1 `Out-File -Encoding utf8`) prepend.
+
 ---
 
 ## 6. Open questions
