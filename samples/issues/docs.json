@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 104,
+  "issue": {
+    "title": "Timezone example in the docs uses a removed argument",
+    "body": "The \"Working with timezones\" page shows:\n\n```python\nparse_date(\"2024-05-01 14:00\", timezone=\"UTC\")\n```\n\nBut the `timezone` argument was renamed to `tz` in v2.0, so copying the example fails with `TypeError: unexpected keyword argument 'timezone'`. The code works fine with `tz=` — it's only the documentation page that's out of date.",
+    "author": "reporter4",
+    "updated_at": "2026-10-01T12:45:00Z"
+  }
+}

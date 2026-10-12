@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 105,
+  "issue": {
+    "title": "Several things about parsing",
+    "body": "A few things I noticed:\n\n1. Parsing `31/12/2024` sometimes gives the wrong month, not sure if I'm using it wrong.\n2. It would be nice to have a `strict=True` mode.\n3. Also, is there a way to get the day of the week back?\n\nLet me know which of these I should open separately.",
+    "author": "reporter5",
+    "updated_at": "2026-10-02T08:10:00Z"
+  }
+}

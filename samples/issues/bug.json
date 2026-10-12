@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 101,
+  "issue": {
+    "title": "parse_date returns March 1st for 2024-02-30 instead of raising",
+    "body": "### Description\nAfter upgrading to v2.3, `parse_date(\"2024-02-30\")` returns `2024-03-01` instead of raising `ValueError`. In v2.2 it raised as expected.\n\n### Steps to reproduce\n```python\nfrom datekit import parse_date\nprint(parse_date(\"2024-02-30\"))\n```\n\n### Expected\n`ValueError: day is out of range for month`\n\n### Actual\n`2024-03-01`\n\n### Environment\n- datekit 2.3.0\n- Python 3.12\n- Ubuntu 22.04",
+    "author": "reporter1",
+    "updated_at": "2026-10-01T09:15:00Z"
+  }
+}

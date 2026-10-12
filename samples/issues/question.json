@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 103,
+  "issue": {
+    "title": "How do I parse dates in a specific timezone?",
+    "body": "I have strings like `2024-05-01 14:00` that are in Asia/Kolkata time. How do I tell `parse_date` which timezone to use so I get an aware datetime?\n\nI looked for a `tz` argument but wasn't sure if that's the right approach. Thanks!",
+    "author": "reporter3",
+    "updated_at": "2026-10-01T11:30:00Z"
+  }
+}

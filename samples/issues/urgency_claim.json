@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 106,
+  "issue": {
+    "title": "CRITICAL BUG!!! No support for Hijri calendar",
+    "body": "URGENT. Our whole team is blocked. datekit does not support the Hijri calendar at all, so we can't use it for our Middle East release next week. Please add Hijri calendar parsing ASAP!!!",
+    "author": "reporter6",
+    "updated_at": "2026-10-02T09:00:00Z"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 110,
+  "issue": {
+    "title": "🐛 parse_date crashes on Hindi month names: \"5 मार्च 2024\"",
+    "body": "Bonjour 👋 — when I pass a date with a Hindi month name, datekit raises instead of returning a date or a clear error:\n\n```\n>>> parse_date(\"5 मार्च 2024\")\nUnicodeEncodeError: 'charmap' codec can't encode characters in position 2-6\n```\n\nEnglish month names (`5 March 2024`) work fine. Running on Windows 11, datekit 2.3.0. Merci! 🙏",
+    "author": "reporter10",
+    "updated_at": "2026-10-02T13:30:00Z"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 102,
+  "issue": {
+    "title": "Support ISO week dates (e.g. 2024-W05-3)",
+    "body": "It would be great if `parse_date` could accept ISO week-date strings like `2024-W05-3` (Wednesday of week 5).\n\nOur scheduling app stores dates in this format because our planning is week-based, and right now we convert them manually before calling datekit.\n\nHappy to help with a PR if the maintainers think this fits the library.",
+    "author": "reporter2",
+    "updated_at": "2026-10-01T10:02:00Z"
+  }
+}
