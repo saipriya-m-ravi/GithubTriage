@@ -45,16 +45,20 @@ Template for each entry:
 > **Eval metric:** …
 
 ### R1. Classification
-- **Input:** issue title + body. **Decision:** one of 4 fixed types. **Output:** type + confidence + short reasoning. **Cost of error:** low (human reviews), but a wrong type routes the issue down the wrong branch.
+- **Input:** issue title + body. **Decision:** one of 4 fixed types (bug / feature / question / docs), or `unclear`. **Output:** type + confidence + short reasoning. **Cost of error:** low (human reviews), but a wrong type routes the issue down the wrong branch.
 - **Executor:** Rule if an issue template was used; otherwise **one structured LLM call** (Pydantic `Literal` schema). Not an agent — nothing to look up, no step depends on an observation.
 - **Tools needed:** none.
 - **Production risks → mitigations:**
-  - Ambiguous / mixed issues → allow `unclear`, route low confidence to human
-  - Overconfident model → calibrate confidence against eval set
+  - Ambiguous / mixed issues → allow `unclear`; **`unclear` always needs a human, regardless of confidence** (see findings below); low confidence on other types also routes to a human once calibrated
+  - Overconfident model → calibrate confidence against eval set before using it in any rule
   - Prompt injection in body → delimit issue as data; classification never triggers writes on its own; HITL
   - Malformed output → native structured output + 1 retry + fallback to `unclear`
   - Cost at scale → small/cheap model is sufficient
 - **Eval metric:** accuracy / macro-F1 vs. maintainer labels on 50–100 closed issues.
+- **Findings from the slice 1 sample run** (10 samples, 10/10 correct — a behaviour check, not an accuracy measure):
+  - **Confidence is not yet usable for decisions.** Every sample scored 0.80–0.99, so a rule like "human review below 0.7" would almost never trigger. Calibrate on the slice 4 eval set first.
+  - **`unclear` and low confidence are different signals.** `unclear_mixed.json` came back `unclear` at 0.93 — the model is *confident the issue is mixed*. **Decision:** any routing rule treats `type == "unclear"` as needing human attention **regardless of confidence**; confidence thresholds apply only to the other types.
+- **Idea — not decided:** flag injection attempts to maintainers. The model correctly ignored the injection in `injection.json`, but its reasoning didn't mention it, so maintainers never learn someone tried to manipulate the bot. Option: add `suspicious_instructions: bool` to `Classification` and show a warning in the approval page. Trade-off: extra output tokens and a new field to evaluate (false alarms on issues that legitimately quote instructions, e.g. bug reports about prompts). Revisit when building the approval page (slice 3/7).
 
 ### R2. Duplicate finder
 - **Input:** the new issue (title, body, and any error text), plus the index of past issues.
