@@ -2,6 +2,22 @@
 
 import pytest
 
+from githubtriage.config import settings
+
+LANGSMITH_VARS = ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT")
+
+
+@pytest.fixture(autouse=True)
+def no_tracing(monkeypatch):
+    """Every test runs with tracing off, so tests never upload traces.
+
+    delenv first so monkeypatch records the original values and restores them
+    after the test, even if code under test writes to os.environ.
+    """
+    for var in LANGSMITH_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(settings, "langsmith_tracing", False)
+
 
 class FakeStructured:
     """Stands in for llm.with_structured_output(...): returns a result or raises."""

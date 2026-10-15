@@ -59,6 +59,33 @@ Template for each entry:
   - **Confidence is not yet usable for decisions.** Every sample scored 0.80–0.99, so a rule like "human review below 0.7" would almost never trigger. Calibrate on the slice 4 eval set first.
   - **`unclear` and low confidence are different signals.** `unclear_mixed.json` came back `unclear` at 0.93 — the model is *confident the issue is mixed*. **Decision:** any routing rule treats `type == "unclear"` as needing human attention **regardless of confidence**; confidence thresholds apply only to the other types.
 - **Idea — not decided:** flag injection attempts to maintainers. The model correctly ignored the injection in `injection.json`, but its reasoning didn't mention it, so maintainers never learn someone tried to manipulate the bot. Option: add `suspicious_instructions: bool` to `Classification` and show a warning in the approval page. Trade-off: extra output tokens and a new field to evaluate (false alarms on issues that legitimately quote instructions, e.g. bug reports about prompts). Revisit when building the approval page (slice 3/7).
+- **Model choice — provisional (2026-10-15):** `openai/gpt-oss-120b` with `GROQ_REASONING_EFFORT=low`. Alternative: `qwen/qwen3.8-27b` with effort `none`.
+  - **How it was found:** a LangSmith trace showed one `docs.json` classification taking **55.3s**. The trace placed all the time in the `classify` LLM run; `-v` logs showed **client retries** (the main cause). The trace also showed **111 output tokens, 48 of them hidden reasoning** — ~43% of output spent "thinking" on a 5-way classification. That prompted a comparison.
+  - **Experiment:** `debug_helper_scripts/run_samples.py` on the 10 samples, one run per configuration, switching settings via environment variables:
+
+    | | A: gpt-oss-120b, default effort | B: gpt-oss-120b, low effort | C: qwen3.8-27b, effort none |
+    |---|---|---|---|
+    | Correct (incl. 2 adversarial) | 10/10 | 10/10 | 10/10 |
+    | Median / max / total time | 5.3s / 12.9s / 69.5s | 3.1s / 4.9s / 36.1s | **2.3s / 4.1s / 25.3s** |
+    | Confidence: `empty_body` / `unclear_mixed` | 0.85 / 0.93 | 0.60 / 0.85 | **0.30 / 0.40** |
+    | Tokens on `docs.json` | 111 output (48 reasoning) | — | — |
+    | Tokens on `unicode.json` (in / out) | — | 557 / 92 | 750 / 77 |
+    | Groq price per 1M tokens (in / out) | $0.15 / $0.60 | $0.15 / $0.60 | $0.80 / $4.00 |
+    | **Cost on `unicode.json`** (tokens × price) | — | **$0.000139** (~$0.14 per 1,000 issues) | $0.000908 (~$0.91 per 1,000 issues) |
+
+  - **Why B:**
+    - Same results as C on every sample, including both attacks.
+    - **~6.5× cheaper than C.** The flow design (§4) says latency barely matters — a human approves hours later — **so cost wins.**
+    - C's advantages don't matter yet: its 0.8s faster median isn't a constraint for background triage, and its more informative confidence isn't used until confidence is calibrated (slice 4).
+    - Low reasoning effort halved latency vs the default (median 5.3s → 3.1s) with no loss on the samples.
+  - **History:** the first version of this decision chose C, assuming the smaller non-reasoning model was also cheapest. Measured cost showed the opposite (C uses ~35% more tokens for the same text — a different tokenizer — and costs 5.3× more per input token and 6.7× more per output token). Reversed the same day. *Measure cost; don't infer it from model size.*
+  - **Caveats:**
+    - **Ceiling effect** — all three scored 10/10, so the samples can't separate the models on accuracy. The choice rests on cost, latency and confidence behaviour.
+    - 10 samples, one run each; timings are noisy (rate limits, retries). Cost measured on one sample (`unicode.json`).
+    - **Prices verified** against Groq's pricing page: tokens × price reproduces LangSmith's cost exactly ($0.0001568 for `docs.json` on default effort). An earlier "9×" came from dividing rounded dashboard values ($0.0009 / $0.0001); computed from raw numbers it is ~6.5×. *Calculate ratios from raw numbers, not rounded display values.*
+    - Token counts are not comparable across models (different tokenizers) — compare cost in money.
+    - C's coarse confidence (0.95 on 7 of 10 samples) also limits its value for thresholds.
+  - **Revisit C if** calibrated confidence becomes important (slice 4). **Re-evaluate both** on the slice 4 eval set (real issues + more adversarial cases, e.g. a bug report titled "Question"). Switching is a `.env` change only.
 
 ### R2. Duplicate finder
 - **Input:** the new issue (title, body, and any error text), plus the index of past issues.
@@ -458,6 +485,13 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 - Traces every run: nodes, LLM calls, prompts, tokens, cost, latency; plus datasets and evals.
 - *Why LangSmith over Langfuse:* near-zero setup with LangGraph (environment variables) and **LangGraph Studio** for visualising and stepping through the graph while learning. Langfuse (open source, self-hostable) is an equally valid alternative — use one, not both.
 - *Rules:* redact secrets before anything is traced; tag each trace with `prompt_version` and `model` (§5.3).
+- *Implementation (`observability.py`):*
+  - **Off by default** — it sends prompts and outputs to a third party; enabling it is a deliberate choice (`LANGSMITH_TRACING=true`).
+  - Settings live in `config.py` like everything else; `configure_tracing(settings)` copies them into `os.environ` (the SDK reads only the environment) and **fails fast** if tracing is on without a key. Called first in each entry point, before any LangChain code — the SDK caches env values on first read.
+  - `run_config(...)` gives every run `run_name="triage"`, a source tag (`cli`, later `api`), and metadata: repo, issue number, **model and prompt versions** — shared by all adapters.
+  - The CLI calls `wait_for_all_tracers()` before exiting (uploads run in a background thread; short-lived processes can exit first).
+  - Tests: an autouse fixture forces tracing off — tests never upload traces.
+  - Keys: personal access token for local dev (project `githubtriage-dev`); a workspace **service key** and project `githubtriage-prod` for the deployed service (slice 7).
 
 **User interfaces — two separate pages, one FastAPI service.**
 
@@ -546,7 +580,7 @@ Spam/harass under the project's name · phishing links · steal secrets · manip
 ### 5.6 CLI
 - `cli.py` is a **thin adapter** over the core (`build_graph`): parse args, configure logging, load + validate input, invoke, present output. No triage logic — the FastAPI adapter (slice 7) calls the same core.
 - **stdout = result** (human-readable, or `--json`); **stderr = logs, warnings, errors.**
-- **Exit codes:** `0` = triage ran, **including degraded runs** (`errors` non-empty — they still produce a draft; errors are printed to stderr as warnings); `1` = input file missing or invalid; `2` = wrong usage (argparse).
+- **Exit codes:** `0` = triage ran, **including degraded runs** (`errors` non-empty — they still produce a draft; errors are printed to stderr as warnings); `1` = input file missing or invalid, or configuration invalid (e.g. tracing on without a LangSmith key); `2` = wrong usage (argparse).
 - Files are always read/written with an explicit encoding (Windows defaults to a legacy code page). Input files are read as `utf-8-sig`, which also strips the BOM that Windows tools (e.g. PowerShell 5.1 `Out-File -Encoding utf8`) prepend.
 
 ---

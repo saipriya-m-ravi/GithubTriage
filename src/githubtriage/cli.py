@@ -4,7 +4,8 @@ Keep this module thin — no triage logic here. The same core (`build_graph`) wi
 called by the FastAPI adapter in slice 7.
 
 Exit codes: 0 = triage ran (even if degraded — errors are printed as warnings),
-1 = the input could not be read or validated, 2 = wrong usage (set by argparse).
+1 = the input could not be read or validated, or configuration is invalid,
+2 = wrong usage (set by argparse).
 """
 
 import argparse
@@ -12,13 +13,23 @@ import logging
 import sys
 from pathlib import Path
 
+from langchain_core.tracers.langchain import wait_for_all_tracers
 from pydantic import ValidationError
 
+from githubtriage.config import settings
 from githubtriage.graph import build_graph
 from githubtriage.models import TriageState
+from githubtriage.observability import (
+    TracingConfigError,
+    configure_tracing,
+    run_config,
+)
+
+logger = logging.getLogger(__name__)
 
 EXIT_OK = 0
 EXIT_BAD_INPUT = 1
+EXIT_CONFIG_ERROR = 1
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -65,6 +76,15 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     _configure_logging(args.verbose)
 
+    # Must run before any LangChain/LangGraph code: the SDK caches env values.
+    try:
+        tracing = configure_tracing(settings)
+    except TracingConfigError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    if tracing:
+        logger.info("LangSmith tracing on (project: %s)", settings.langsmith_project)
+
     try:
         state = _load_state(args.path)
     except FileNotFoundError:
@@ -74,7 +94,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: invalid issue file {args.path}:\n{e}", file=sys.stderr)
         return EXIT_BAD_INPUT
 
-    result = TriageState.model_validate(build_graph().invoke(state))
+    config = run_config(
+        state.repo,
+        state.issue_number,
+        model=settings.groq_model,
+        source="cli",
+        reasoning_effort=settings.groq_reasoning_effort,
+    )
+    try:
+        result = TriageState.model_validate(build_graph().invoke(state, config=config))
+    finally:
+        # Traces upload in a background thread; a CLI can exit before it finishes.
+        if tracing:
+            wait_for_all_tracers()
 
     if args.json:
         print(result.model_dump_json(indent=2))

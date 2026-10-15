@@ -11,7 +11,8 @@ A GitHub App that watches a repository. When a new issue is opened, a LangGraph 
 ### Status
 Built in 8 vertical slices, each adding one capability to a system that already runs end to end.
 
-- ✅ **Slice 1:** classify an issue (one structured LLM call with prompt-injection guardrails) → template-based draft reply → CLI. 28 tests, none of which call the LLM.
+- ✅ **Slice 1:** classify an issue (one structured LLM call with prompt-injection guardrails) → template-based draft reply → CLI. 
+
 - ⏳ Slices 2–8: completeness check & routing, human approval, GitHub API, duplicate finder (RAG), grounded answers, FastAPI service, reproduction agent.
 
 ## Running it
