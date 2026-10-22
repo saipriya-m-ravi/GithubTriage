@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 111,
+  "issue": {
+    "title": "parse_date raises KeyError with custom format",
+    "body": "Since updating to the latest version, passing a custom format fails.\n\n### Steps to reproduce\n```python\nfrom datekit import parse_date\nparse_date(\"01/02/2024\", fmt=\"%d/%m/%Y\")\n```\n\n### Error\n```\nTraceback (most recent call last):\n  File \"repro.py\", line 2, in <module>\n    parse_date(\"01/02/2024\", fmt=\"%d/%m/%Y\")\n  File \"datekit/core.py\", line 88, in parse_date\n    pattern = FORMATS[fmt]\nKeyError: '%d/%m/%Y'\n```\n\nThis worked before I upgraded.",
+    "author": "reporter11",
+    "updated_at": "2026-10-22T09:00:00Z"
+  }
+}

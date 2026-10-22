@@ -35,26 +35,46 @@ class FakeStructured:
 
 
 class FakeChatModel:
-    """Stands in for ChatGroq: only the method classify() uses."""
+    """Stands in for ChatGroq: returns the fake registered for each output schema."""
 
-    def __init__(self, structured):
-        self.structured = structured
+    def __init__(self, by_schema):
+        self.by_schema = by_schema
 
     def with_structured_output(self, schema, **kwargs):
-        return self.structured
+        if schema not in self.by_schema:
+            # Surfaces unexpected LLM calls (e.g. a node that should have been skipped).
+            raise AssertionError(f"unexpected LLM call for {schema.__name__}")
+        return self.by_schema[schema]
+
+
+# Every module that calls the LLM. Patch where the name is USED, not where it's
+# defined (llm.py): each module holds its own reference after `from ... import`.
+LLM_USERS = (
+    "githubtriage.nodes.classify.get_chat_groq_model",
+    "githubtriage.nodes.completeness.get_chat_groq_model",
+)
 
 
 @pytest.fixture
 def use_fake_llm(monkeypatch):
-    """Install a fake LLM in the classify module; returns the fake for inspection."""
+    """Install fake LLM responses, one per output schema; returns the fake.
 
-    def install(result=None, error=None):
+    use_fake_llm(result=Classification(...))                  # classify returns this
+    use_fake_llm(result=Completeness(...))                    # completeness returns this
+    use_fake_llm(error=RuntimeError("x"))                     # classify raises
+    use_fake_llm(error=RuntimeError("x"), schema=Completeness)  # completeness raises
+    Calls accumulate within a test, so classify and completeness can both be faked.
+    """
+    from githubtriage.models import Classification
+
+    by_schema = {}
+    for target in LLM_USERS:
+        monkeypatch.setattr(target, lambda: FakeChatModel(by_schema))
+
+    def install(result=None, error=None, schema=None):
+        schema = schema or (type(result) if result is not None else Classification)
         structured = FakeStructured(result=result, error=error)
-        # Patch where it's USED (classify's own name), not where it's defined (llm.py).
-        monkeypatch.setattr(
-            "githubtriage.nodes.classify.get_chat_groq_model",
-            lambda: FakeChatModel(structured),
-        )
+        by_schema[schema] = structured
         return structured
 
     return install

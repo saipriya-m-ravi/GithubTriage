@@ -3,7 +3,8 @@ import os
 import pytest
 
 from githubtriage.config import Settings
-from githubtriage.nodes.classify import PROMPT_VERSION
+from githubtriage.nodes.classify import PROMPT_VERSION as CLASSIFY_VERSION
+from githubtriage.nodes.completeness import PROMPT_VERSION as COMPLETENESS_VERSION
 from githubtriage.observability import (
     TracingConfigError,
     configure_tracing,
@@ -53,4 +54,7 @@ def test_run_config_carries_governance_metadata():
     assert config["tags"] == ["cli"]
     assert config["metadata"]["model"] == "m-1"
     assert config["metadata"]["reasoning_effort"] == "default"
-    assert config["metadata"]["prompt_versions"] == {"classify": PROMPT_VERSION}
+    assert config["metadata"]["prompt_versions"] == {
+        "classify": CLASSIFY_VERSION,
+        "completeness": COMPLETENESS_VERSION,
+    }

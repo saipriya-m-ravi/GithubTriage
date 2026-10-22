@@ -1,11 +1,35 @@
 from datetime import UTC, datetime
 
-from githubtriage.graph import build_graph
-from githubtriage.models import Classification, Issue, TriageState
+import pytest
+
+from githubtriage.graph import build_graph, route_after_classify
+from githubtriage.models import (
+    Classification,
+    Completeness,
+    FieldCheck,
+    Issue,
+    TriageState,
+)
 from githubtriage.nodes.classify import SYSTEM_PROMPT
 from githubtriage.nodes.draft import FOOTER, TYPE_MESSAGES
 
 # The fake LLM and the `use_fake_llm` fixture live in tests/conftest.py.
+# The fake raises "unexpected LLM call" for any schema a test didn't register; a
+# node catches that and records it in `errors` — so `errors == []` also proves
+# that no unexpected LLM call happened.
+
+OK = FieldCheck(status="ok", note="")
+COMPLETE = Completeness(version=OK, repro_steps=OK, logs=OK)
+
+
+def classified(issue_type):
+    return Classification(type=issue_type, confidence=0.9, reasoning="test")
+
+
+def run_graph(state: TriageState) -> TriageState:
+    # invoke() returns a dict that OMITS fields no node wrote (e.g. `completeness`
+    # when it was skipped). Validating restores them with their defaults (None).
+    return TriageState.model_validate(build_graph().invoke(state))
 
 
 def make_input(
@@ -20,17 +44,65 @@ def make_input(
     )
 
 
-def test_happy_path_classifies_and_drafts(use_fake_llm):
-    use_fake_llm(
-        result=Classification(type="bug", confidence=0.9, reasoning="blank page")
-    )
+# --- Router: a pure function, so every branch is tested directly, no LLM ---
 
-    result = build_graph().invoke(make_input())
 
-    assert result["classification"].type == "bug"
-    assert TYPE_MESSAGES["bug"] in result["draft"]
-    assert result["draft"].endswith(FOOTER)
-    assert result["errors"] == []
+@pytest.mark.parametrize(
+    "issue_type, expected",
+    [
+        ("bug", "completeness"),
+        ("feature", "draft"),
+        ("question", "draft"),
+        ("docs", "draft"),
+        ("unclear", "draft"),
+    ],
+)
+def test_router_sends_only_bugs_to_completeness(issue_type, expected):
+    state = make_input().model_copy(update={"classification": classified(issue_type)})
+    assert route_after_classify(state) == expected
+
+
+def test_router_defaults_to_draft_without_classification():
+    assert route_after_classify(make_input()) == "draft"
+
+
+# --- Whole graph ---
+
+
+def test_bug_goes_through_completeness(use_fake_llm):
+    use_fake_llm(result=classified("bug"))
+    use_fake_llm(result=COMPLETE)
+
+    result = run_graph(make_input())
+
+    assert result.classification.type == "bug"
+    assert result.completeness == COMPLETE
+    assert TYPE_MESSAGES["bug"] in result.draft
+    assert result.draft.endswith(FOOTER)
+    assert result.errors == []
+
+
+def test_non_bug_skips_completeness(use_fake_llm):
+    # No Completeness fake registered: if the router wrongly called it,
+    # the fake would raise and `errors` would not be empty.
+    use_fake_llm(result=classified("feature"))
+
+    result = run_graph(make_input())
+
+    assert result.completeness is None
+    assert TYPE_MESSAGES["feature"] in result.draft
+    assert result.errors == []
+
+
+def test_completeness_failure_still_produces_a_draft(use_fake_llm):
+    use_fake_llm(result=classified("bug"))
+    use_fake_llm(error=RuntimeError("boom"), schema=Completeness)
+
+    result = run_graph(make_input())
+
+    assert result.completeness is None  # unknown, never invented
+    assert TYPE_MESSAGES["bug"] in result.draft
+    assert result.errors == ["completeness: RuntimeError"]
 
 
 def test_llm_failure_still_produces_a_draft(use_fake_llm):

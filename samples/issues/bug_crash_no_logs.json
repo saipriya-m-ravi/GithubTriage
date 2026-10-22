@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 113,
+  "issue": {
+    "title": "Crash when parsing dates before 1900",
+    "body": "Since upgrading to datekit 2.3.0, my script crashes as soon as I parse a date before 1900.\n\nTo reproduce:\n```python\nfrom datekit import parse_date\nparse_date(\"1899-12-31\")\n```\n\nIt throws an error and the script exits. Windows 11, Python 3.12.",
+    "author": "reporter13",
+    "updated_at": "2026-10-22T10:00:00Z"
+  }
+}

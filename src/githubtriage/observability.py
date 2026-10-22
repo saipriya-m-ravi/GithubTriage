@@ -12,6 +12,9 @@ import os
 
 from githubtriage.config import Settings
 from githubtriage.nodes.classify import PROMPT_VERSION as CLASSIFY_PROMPT_VERSION
+from githubtriage.nodes.completeness import (
+    PROMPT_VERSION as COMPLETENESS_PROMPT_VERSION,
+)
 
 
 class TracingConfigError(RuntimeError):
@@ -62,6 +65,9 @@ def run_config(
             "issue_number": issue_number,
             "model": model,
             "reasoning_effort": reasoning_effort or "default",
-            "prompt_versions": {"classify": CLASSIFY_PROMPT_VERSION},
+            "prompt_versions": {
+                "classify": CLASSIFY_PROMPT_VERSION,
+                "completeness": COMPLETENESS_PROMPT_VERSION,
+            },
         },
     }

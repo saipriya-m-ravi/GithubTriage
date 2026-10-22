@@ -1,7 +1,8 @@
 {
   "bug.json": {
     "type": "bug",
-    "why": "Equivalence class: bug. Reports existing behaviour broken after an upgrade, with repro."
+    "why": "Equivalence class: bug. Reports existing behaviour broken after an upgrade, with repro.",
+    "completeness": {"version": "ok", "repro_steps": "ok", "logs": "not_needed"}
   },
   "feature.json": {
     "type": "feature",
@@ -37,6 +38,22 @@
   },
   "unicode.json": {
     "type": "bug",
-    "why": "Edge: emoji, Hindi and French text, code block. Tests UTF-8 end to end."
+    "why": "Edge: emoji, Hindi and French text, code block. Tests UTF-8 end to end.",
+    "completeness": {"version": "ok", "repro_steps": "ok", "logs": "ok"}
+  },
+  "bug_vague_version.json": {
+    "type": "bug",
+    "why": "Completeness: 'the latest version' instead of a number; steps and traceback given.",
+    "completeness": {"version": "vague", "repro_steps": "ok", "logs": "ok"}
+  },
+  "bug_no_repro.json": {
+    "type": "bug",
+    "why": "Completeness: only a symptom ('gives wrong results'), no version; no error described, so logs not needed.",
+    "completeness": {"version": "missing", "repro_steps": "vague", "logs": "not_needed"}
+  },
+  "bug_crash_no_logs.json": {
+    "type": "bug",
+    "why": "Completeness: says it crashes but gives no error text (mirror of bug.json's not_needed).",
+    "completeness": {"version": "ok", "repro_steps": "ok", "logs": "missing"}
   }
 }

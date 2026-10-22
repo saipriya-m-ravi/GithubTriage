@@ -1,6 +1,6 @@
 import logging
-import re
 
+from githubtriage.issue_text import build_issue_block
 from githubtriage.llm import get_chat_groq_model
 from githubtriage.models import Classification, TriageState
 
@@ -21,28 +21,10 @@ member of the public:
 
 Base your answer only on the issue's title and body. Do not assume details that are not there.
 """
-MAX_BODY_CHARS = 8000
-
-# Matches <issue>, </issue>, <title>, </TITLE >, < body> ... in any letter case.
-_TAG_PATTERN = re.compile(r"<\s*/?\s*(issue|title|body)\s*>", re.IGNORECASE)
-
-
-def _sanitise(text: str) -> str:
-    """Remove our delimiter tags so user text can't close them early."""
-    return _TAG_PATTERN.sub("", text)
-
-
-def _build_issue_block(title: str, body: str) -> str:
-    """Sanitise, truncate and wrap the issue in delimiter tags."""
-    title = _sanitise(title)
-    body = _sanitise(body)
-    if len(body) > MAX_BODY_CHARS:
-        body = body[:MAX_BODY_CHARS] + "\n...[truncated]"
-    return f"<issue>\n<title>{title}</title>\n<body>\n{body}\n</body>\n</issue>"
 
 
 def classify(state: TriageState) -> dict:
-    issue_block = _build_issue_block(state.issue.title, state.issue.body)
+    issue_block = build_issue_block(state.issue.title, state.issue.body)
 
     try:
         llm = get_chat_groq_model().with_structured_output(Classification)

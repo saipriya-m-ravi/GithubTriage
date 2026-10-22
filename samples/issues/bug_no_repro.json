@@ -1,0 +1,10 @@
+{
+  "repo": "example-org/datekit",
+  "issue_number": 112,
+  "issue": {
+    "title": "parse_date is broken",
+    "body": "parse_date doesn't work properly anymore and gives wrong results for some of our dates. Please fix this ASAP, it's breaking our reports.",
+    "author": "reporter12",
+    "updated_at": "2026-10-22T09:30:00Z"
+  }
+}

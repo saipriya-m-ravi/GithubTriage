@@ -3,7 +3,7 @@ import json
 import pytest
 
 from githubtriage.cli import EXIT_BAD_INPUT, EXIT_OK, main
-from githubtriage.models import Classification, TriageState
+from githubtriage.models import Classification, Completeness, FieldCheck, TriageState
 from githubtriage.nodes.draft import TYPE_MESSAGES
 
 ISSUE = {
@@ -27,6 +27,9 @@ def issue_file(tmp_path):
 
 @pytest.fixture
 def fake_bug(use_fake_llm):
+    # A bug goes through classify AND completeness, so both need a fake answer.
+    ok = FieldCheck(status="ok", note="")
+    use_fake_llm(result=Completeness(version=ok, repro_steps=ok, logs=ok))
     return use_fake_llm(
         result=Classification(type="bug", confidence=0.9, reasoning="blank page")
     )

@@ -47,10 +47,65 @@ class Classification(BaseModel):
     )
 
 
+FieldStatus = Literal["missing", "vague", "ok", "not_needed"]
+
+
+class FieldCheck(BaseModel):
+    """Assessment of one piece of information a maintainer needs."""
+
+    status: FieldStatus = Field(
+        description=(
+            "missing: the issue does not give this information at all. "
+            "vague: it is mentioned but not usable (see the field's own description). "
+            "ok: it is given clearly enough for a maintainer to act on. "
+            "not_needed: this information does not apply to this issue."
+        )
+    )
+    note: str = Field(
+        description=(
+            "If missing or vague: a short, polite phrase (max 15 words) saying exactly "
+            "what to add, written so it can be shown to the reporter, e.g. "
+            "\"the exact version number, not 'latest'\". "
+            "If ok or not_needed: an empty string."
+        )
+    )
+
+
+class Completeness(BaseModel):
+    """Whether a bug report contains what a maintainer needs to reproduce it."""
+
+    version: FieldCheck = Field(
+        description=(
+            "The version of the project the reporter is using. "
+            "ok: a specific version such as 2.3.0. "
+            "vague: 'latest', 'master', 'the new one', or only a date. "
+            "Never not_needed for a bug."
+        )
+    )
+    repro_steps: FieldCheck = Field(
+        description=(
+            "Steps or a code snippet someone else could follow to see the problem. "
+            "ok: concrete steps or runnable code. "
+            "vague: only a description of the symptom, e.g. 'it crashes when I use it'. "
+            "Never not_needed for a bug."
+        )
+    )
+    logs: FieldCheck = Field(
+        description=(
+            "Error messages, tracebacks or log output. "
+            "ok: the error text or traceback is included. "
+            "missing: an error, exception or crash is described but its text is not given. "
+            "not_needed: no error, exception or crash is described "
+            "(e.g. the code runs but returns a wrong value)."
+        )
+    )
+
+
 class TriageState(BaseModel):
     repo: str
     issue_number: int
     issue: Issue
     classification: Classification | None = None
+    completeness: Completeness | None = None  # None until R3 runs, or if skipped
     draft: str | None = None
     errors: Annotated[list[str], operator.add] = []
