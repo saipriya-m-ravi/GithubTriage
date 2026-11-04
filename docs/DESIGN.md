@@ -165,6 +165,7 @@ class Completeness(BaseModel):
   - ⚠️ **False nag:** `bug_no_repro.json` ("doesn't work properly… gives wrong results", no error described) → logs `missing`, expected `not_needed`. The bot would ask for logs that don't exist. **Vague reports are where false nags come from** — and they are common in real repositories.
   - Label errors with no effect on the reply: `bug_vague_version.json` logs `not_needed` although a traceback was given (expected `ok`); `bug_no_repro.json` repro `missing` vs expected `vague`.
   - Cost/latency: bugs now make two LLM calls (~5–8 s vs ~2.5–4 s for other types).
+  - **Second run (2026-11-04, same model and prompt):** 11/15 exact, **1 false nag (same sample, repeated) + 1 missed ask**: `bug_crash_no_logs.json` logs `ok` although no error text is given — the first run got this right. **Run-to-run variation**: the slice 4 eval must use repeated runs (or many samples), not single results.
   - **Decision:** record now; fix with real data in slice 4 rather than tuning the prompt on one sample. Candidate fix to test then: tighten the `logs` description — *"missing only when an error, exception or crash is explicitly described; wrong output alone → not_needed; if error text or a traceback is included → ok"* — bump to `completeness-v2`, and check it removes false nags **without** creating missed asks (e.g. `bug_crash_no_logs.json`).
 
 ### R4. Reproduction (sandbox) — via Agent
@@ -283,7 +284,11 @@ class DraftResponse(BaseModel):
 
 - **Durable execution (the waiting problem):** approval may come hours later, after restarts and deploys, so nothing can wait in memory.
   1. Graph runs up to the approval node → `interrupt()` pauses it.
-  2. The **Postgres checkpointer** saves full graph state after every node, keyed by `thread_id = "{repo}#{issue_number}"` (one paused workflow per issue). Not the in-memory checkpointer — a restart would lose everything.
+  2. The **Postgres checkpointer** (SQLite locally) saves full graph state after every node, keyed by a **`thread_id` per triage run**: `"{repo}#{issue_number}@{UTC timestamp}"`. Not the in-memory checkpointer — a restart would lose everything.
+     - **A thread is one run, not one issue** (slice 3 finding): re-running with new input on an existing thread *continues the old state* — e.g. `posted_comment_id` stays set and the new reply is silently skipped; `errors` even accumulates across runs. So every triage starts a fresh thread.
+     - **Re-triage policy:** a new triage **cancels** any run of the same issue still waiting for approval (at most one draft per issue waits; approving the old run id fails with a clear message). A re-triage **after posting is allowed** and may post a new reply.
+     - **Idempotency key = the run.** Outbox file and the hidden marker are per thread: a retry of the same run can't duplicate; a new run may reply again. (Per-issue keys would block the legitimate second reply.)
+     - Cancelling deletes the run's checkpoint (`delete_thread`) — fine for the CLI prototype; production should **mark runs cancelled** in a runs table to keep the audit trail.
   3. The process stops; nothing is held in memory.
   4. The approval endpoint (FastAPI) resumes the graph with `Command(resume=decision)` and the same `thread_id` — from any process, since state lives in Postgres.
 
@@ -301,6 +306,12 @@ class DraftResponse(BaseModel):
   - **Approval** (read / edit / approve / reject) → a small **FastAPI page with GitHub OAuth login**; only repo maintainers may approve.
   - Later, if maintainers ask: Slack interactive buttons (verify Slack request signatures; editing in Slack is awkward).
 
+- **What the maintainer sees — `ApprovalRequest` (slice 3, 2026-10-27):** the `interrupt()` payload is an explicit, minimal view model, **not the whole `TriageState`**.
+  - Contains: repo, issue number, title, **issue URL**, type + confidence + reasoning, completeness per field (**status + the LLM's note** — notes are for maintainers, never the public reply), the draft, and `errors` (so degraded drafts are judged fairly).
+  - Leaves out: the **issue body** (read it on GitHub via the URL — the approval page doesn't re-render untrusted text, the XSS sink in §5.5), and internal fields (`decision`, `posted_comment_id`, later R4 run ids).
+  - **Why not the whole state:** the payload is an interface (graph → CLI now, approval page/HTTP later). Internal state changes every slice; an explicit model keeps the interface stable. Every copy of the payload is an exposure (checkpoint, UI, traces, HTTP response) — send only what's needed. The UI can still call `graph.get_state()` deliberately if it needs more.
+  - Crosses the boundary as **plain JSON** (`model_dump(mode="json")`): no class names to recreate from storage, and the same payload works for the CLI and an HTTP API. The resume value (`Decision`) is **validated** when it comes back in — it's input from outside the graph.
+
 - **Tools needed:** none for any LLM. `post_node` calls the GitHub API from code.
 
 - **Production risks → mitigations:**
@@ -308,12 +319,28 @@ class DraftResponse(BaseModel):
 | Problem | What it looks like | How to avoid it |
 |---|---|---|
 | Stale draft | Reporter added logs / someone replied / issue closed during the wait | Before posting, re-fetch the issue and compare `updated_at`; if changed, re-run triage or flag "issue changed since draft" |
-| Posting twice | Double-click, or request retried after a timeout | Idempotency: store `posted_comment_id` in state and check it before posting |
+| Posting twice | Double-click, a retried request, or **a crash after posting but before the node returns** (the checkpoint never records `posted_comment_id`, so the retry runs `post` again) | **Design for at-least-once; make the action idempotent.** The protection lives in the external system, not the state: a deterministic outbox file per issue + atomic write (slice 3); a hidden marker `<!-- githubtriage:owner/repo#N -->` in the comment + check-then-post (slice 4); a lock / DB unique constraint for concurrent retries (slice 7). `posted_comment_id` is a record and a shortcut, not the safeguard |
 | Fake approvals | Anyone with the approval URL can approve | Authenticate the approver (GitHub OAuth) and check maintainer permission on the repo |
 | Drafts pile up | Hundreds of drafts nobody reviews | Expire after N days, daily digest, auto-discard old drafts |
 | Rubber-stamping | Maintainer approves without reading, defeating the gate | UI highlights risky parts (links, repro output, duplicate claims); track time-to-approve |
 | GitHub API failures | Rate limits / 5xx while posting | Retry with backoff; keep state as "approved, not yet posted" so a retry can finish |
 | Resume in a different process | Approval hits the API server while the graph ran in the worker | Fine — state is in Postgres, not memory |
+
+- **Implementation status (slice 3, done 2026-11-04):**
+
+  | Piece | Where | Notes |
+  |---|---|---|
+  | Pause / resume | `nodes/approval.py` (`interrupt()`), `Command(resume=…)` | Code before `interrupt()` is pure (it re-runs on resume) |
+  | Notify exactly once | `notify` node | Its own node: completed nodes never re-run |
+  | What the maintainer sees | `ApprovalRequest` | Plain-JSON interrupt payload; no issue body |
+  | Decision | `Decision` model | Validated where it enters (CLI and node); edit needs a body; timezone-aware |
+  | Durable storage | `checkpointing.sqlite_checkpointer` (SQLite, local); Postgres in slice 7 | Own context manager so the allowlisted serializer is used |
+  | Deserialization allowlist | `CHECKPOINT_CLASSES` | Includes `TriageState` (the `invoke()` input is stored) |
+  | Run identity | `new_thread_id` → `owner/repo#N@timestamp` | One thread per run; re-triage cancels the waiting run |
+  | Post | `nodes/post.py` → local outbox | Idempotent per run (deterministic file + marker, atomic write); fails loudly without approval |
+  | Stale check | `stale_check` | **Stub** — real comparison with GitHub's `updated_at` in slice 4 |
+  | CLI | `triage`, `show`, `approve`, `edit`, `reject` | `--approver` = OS user until OAuth (slice 7) |
+  | Proof | `tests/test_cli.py`, `test_graph.py` | Separate-"process" runs via SQLite; **crash inside `post` → resume → exactly one reply** |
 
 - **HITL as a label pipeline:** log every decision and edit diff — they become free ground truth and grow the eval set from real data.
 
@@ -342,10 +369,12 @@ class Issue(BaseModel):
 
 class Decision(BaseModel):
     action: Literal["approve", "edit", "reject"]
-    edited_body: str | None = None
+    edited_body: str | None = (
+        None  # required for "edit", forbidden otherwise (validator)
+    )
     reason: str | None = None
     approver: str
-    decided_at: datetime
+    decided_at: AwareDatetime  # timezone-aware
 
 
 class TriageState(BaseModel):
@@ -363,7 +392,9 @@ class TriageState(BaseModel):
 
     # R6
     decision: Decision | None = None
-    posted_comment_id: int | None = None  # idempotency
+    posted_comment_id: str | None = (
+        None  # idempotency; str: outbox id now, GitHub id later
+    )
 
     # cross-cutting
     errors: list[str] = []  # graceful degradation
@@ -376,6 +407,7 @@ class TriageState(BaseModel):
 - **No secrets in state** — it's persisted and appears in traces. Tokens come from config at runtime.
 - **Schema evolution:** paused graphs resume against new code, so add new fields as optional with defaults; avoid renames.
 - **`errors`:** a failing node records the failure and the graph continues; R5 drafts from what's available and the maintainer sees what failed.
+- **Checkpoint allowlist:** `TriageState` and every Pydantic model reachable from it must be in `checkpointing.CHECKPOINT_CLASSES` (enforced by a test). A missing class doesn't fail loudly — in strict mode it comes back from a checkpoint as a plain `dict`. (`TriageState` itself is stored because LangGraph saves the input passed to `invoke()`; this was missed at first and found by an end-to-end CLI run.)
 
 ## 4. Flow / graph
 
@@ -456,7 +488,7 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 |---|---|
 | Anyone can POST to the URL and send fake issues | Verify the `X-Hub-Signature-256` HMAC header using the webhook secret; reject mismatches |
 | GitHub expects a response within ~10s; triage takes much longer | Return `202 Accepted` immediately and put the work on a job queue |
-| Duplicate deliveries (GitHub retries) | Deduplicate on the `X-GitHub-Delivery` ID; `thread_id = repo#issue` gives one workflow per issue |
+| Duplicate deliveries (GitHub retries) | Deduplicate on the `X-GitHub-Delivery` ID; at most one draft per issue waits (a new triage cancels the waiting one) |
 | Infinite loop — the bot's own comment triggers another event | Ignore events whose sender is the bot itself |
 | Events arrive out of order (`edited` before `opened` finished) | Re-fetch current issue state from the API; don't trust the payload alone |
 
@@ -561,6 +593,8 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 | **Approval web page** | **HTML / JavaScript** | **XSS** — script runs in the maintainer's logged-in browser and can approve drafts | Jinja2 autoescaping on; never `\|safe` on user text; sanitise any rendered Markdown | ⏳ slice 7 |
 | Database | SQL | SQL injection | Parameterised queries only | ⏳ slice 5 |
 | Embeddings index | Similarity | Planted issues surfacing in search | Retrieved text treated as data; HITL | ⏳ slice 5 |
+| Outbox files (slice 3, replaced by the GitHub API in slice 4) | File paths built from the repo name | **Path traversal** — a repo name like `../../x` writes outside the outbox | Repo name validated against `owner/name` before it becomes part of a path (tested) | ✅ slice 3 |
+| **Checkpoint store** (SQLite now, Postgres later) | Class names → objects recreated on resume | **Insecure deserialization** — tampered checkpoint data makes the process construct unintended classes | Serializer allowlist (`allowed_msgpack_modules`) of our own state models only, tested for completeness; store not world-writable; no secrets in state | ✅ allowlist (slice 3) |
 
 **Found by this method (not covered earlier):**
 - **XSS in the approval page** — new HTML sink in slice 7.

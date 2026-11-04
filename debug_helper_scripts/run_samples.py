@@ -23,6 +23,7 @@ from pathlib import Path
 
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
+from githubtriage.checkpointing import memory_checkpointer, thread_config
 from githubtriage.config import settings
 from githubtriage.graph import build_graph
 from githubtriage.models import Completeness, TriageState
@@ -77,7 +78,9 @@ def main() -> None:
     # 1. Load the answer key: {"bug.json": {"type": "bug", "why": "..."}, ...}
     expected = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
-    graph = build_graph()  # compile once, reuse for every sample
+    # Compile once, reuse for every sample. Runs pause at approval (needs a
+    # checkpointer); the draft is already in the paused state, which is all we need.
+    graph = build_graph(checkpointer=memory_checkpointer())
     correct = 0
     durations = []
     counts = {"fields": 0, "exact": 0, "false_nag": 0, "missed_ask": 0, "unchecked": 0}
@@ -86,13 +89,17 @@ def main() -> None:
     for name, entry in sorted(expected.items()):
         path = SAMPLES_DIR / name
         state = TriageState.model_validate_json(path.read_text(encoding="utf-8-sig"))
-        config = run_config(
-            state.repo,
-            state.issue_number,
-            model=settings.groq_model,
-            source="samples",
-            reasoning_effort=settings.groq_reasoning_effort,
-        )
+        config = {
+            **run_config(
+                state.repo,
+                state.issue_number,
+                model=settings.groq_model,
+                source="samples",
+                reasoning_effort=settings.groq_reasoning_effort,
+            ),
+            # One thread per sample file (several samples share an issue number).
+            **thread_config(f"samples/{name}"),
+        }
 
         # 3. ...run the real graph, timing it...
         start = time.perf_counter()

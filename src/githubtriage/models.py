@@ -2,7 +2,7 @@ import operator
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 
 class Issue(BaseModel):
@@ -101,6 +101,54 @@ class Completeness(BaseModel):
     )
 
 
+class Decision(BaseModel):
+    """A maintainer's decision on a draft (R6). Also an audit record and a label."""
+
+    action: Literal["approve", "edit", "reject"]
+    edited_body: str | None = None  # the replacement reply; only for "edit"
+    reason: str | None = None  # optional, mostly for "reject"
+    approver: str  # who decided (GitHub username once auth exists, slice 7)
+    decided_at: AwareDatetime  # timezone-aware, so it compares safely with GitHub times
+
+    @model_validator(mode="after")
+    def edited_body_only_for_edit(self) -> "Decision":
+        has_body = bool(self.edited_body and self.edited_body.strip())
+        if self.action == "edit" and not has_body:
+            raise ValueError("an 'edit' decision needs a non-empty edited_body")
+        if self.action != "edit" and self.edited_body is not None:
+            raise ValueError("edited_body is only allowed for an 'edit' decision")
+        return self
+
+
+class FieldReview(BaseModel):
+    """One completeness field as shown to a maintainer (status + the LLM's note)."""
+
+    status: FieldStatus
+    note: str
+
+
+class ApprovalRequest(BaseModel):
+    """What a maintainer sees when asked to approve a draft — the interrupt payload.
+
+    An explicit, minimal view of the state for the graph → UI boundary (CLI now,
+    approval page in slice 7): stable while internal state changes, and only what's
+    needed. The issue body is deliberately left out — maintainers read it on GitHub
+    via issue_url, so we don't re-render untrusted text (XSS sink, DESIGN §5.5).
+    """
+
+    repo: str
+    issue_number: int
+    issue_title: str
+    issue_url: str
+    issue_type: str
+    confidence: float
+    reasoning: str
+    # None = completeness wasn't checked (not a bug, or the check failed).
+    completeness: dict[str, FieldReview] | None
+    draft: str
+    errors: list[str]
+
+
 class TriageState(BaseModel):
     repo: str
     issue_number: int
@@ -108,4 +156,7 @@ class TriageState(BaseModel):
     classification: Classification | None = None
     completeness: Completeness | None = None  # None until R3 runs, or if skipped
     draft: str | None = None
+    # R6 — None until the maintainer decides / the comment is posted.
+    decision: Decision | None = None
+    posted_comment_id: str | None = None  # set once posted; prevents posting twice
     errors: Annotated[list[str], operator.add] = []

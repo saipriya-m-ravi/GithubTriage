@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,6 +18,18 @@ class Settings(BaseSettings):
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "githubtriage-dev"
+
+    # Local working data: paused runs (checkpoints) and the outbox of "posted"
+    # comments. Relative paths resolve from the directory you run the CLI in.
+    data_dir: Path = Path(".githubtriage")
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.data_dir / "checkpoints.sqlite"
+
+    @property
+    def outbox_dir(self) -> Path:
+        return self.data_dir / "outbox"
 
 
 settings = Settings()

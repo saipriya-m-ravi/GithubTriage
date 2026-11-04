@@ -9,3 +9,5 @@ dist/
 docs/BLOGS/
 docs/DEVELOPMENT_PLAN/
 docs/LEARNINGS/
+# Local working data: paused runs (SQLite checkpoints) and the outbox
+.githubtriage/

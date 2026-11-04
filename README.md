@@ -11,9 +11,10 @@ A GitHub App that watches a repository. When a new issue is opened, a LangGraph 
 ### Status
 Built in 8 vertical slices, each adding one capability to a system that already runs end to end.
 
-- ✅ **Slice 1:** classify an issue (one structured LLM call with prompt-injection guardrails) → template-based draft reply → CLI. 
-
-- ⏳ Slices 2–8: completeness check & routing, human approval, GitHub API, duplicate finder (RAG), grounded answers, FastAPI service, reproduction agent.
+- ✅ **Slice 1:** classify an issue (one structured LLM call with prompt-injection guardrails) → template-based draft reply → CLI.
+- ✅ **Slice 2:** completeness check for bugs (conditional routing) → "please add…" requests from fixed, allowlisted wording.
+- ✅ **Slice 3:** human approval — the run pauses, survives restarts (SQLite checkpoints), and resumes on approve / edit / reject; posting is idempotent per run (tested through a simulated crash). Replies go to a local outbox until the GitHub API arrives in slice 4.
+- ⏳ Slices 4–8: GitHub API, duplicate finder (RAG), grounded answers, FastAPI service, reproduction agent.
 
 ## Running it
 
@@ -36,30 +37,42 @@ GROQ_MODEL=your-chosen-groq-model
 ```
 `.env` is git-ignored — never commit it.
 
-### Triage an issue
+### Triage an issue, then decide
+Triage runs until a maintainer's decision is needed, then **pauses** — the run is saved, so the decision can come later, from a separate command.
 ```bash
-uv run githubtriage samples/issues/bug.json
+uv run githubtriage triage samples/issues/bug_vague_version.json
 ```
 ```
 type:       bug (0.99)
-reasoning:  Reporter says parse_date returns a date instead of raising ValueError, indicating broken behavior.
+reasoning:  The reporter shows a traceback and says the function raises KeyError after upgrade, ...
 
 ---- draft ----
-Thanks for opening this issue, @reporter1!
+Thanks for opening this issue, @reporter11!
 
-We've labelled this as a **bug**. A maintainer will look into it. ...
+We've labelled this as a **bug**. A maintainer will look into it.
+
+To help us investigate, could you add:
+- the version of the project you're using (for example, 2.3.0)
 
 _Drafted by GithubTriage — pending maintainer review._
+
+Run: example-org/datekit#111@20261104T061416.125787Z
+Waiting for approval: githubtriage approve|edit|reject example-org/datekit#111
 ```
 
-Options:
 | Command | What it does |
 |---|---|
-| `uv run githubtriage <file> --json` | Print the full result as JSON (machine-readable) |
-| `uv run githubtriage <file> -v` | Show debug logs |
+| `uv run githubtriage show <ref>` | Show the waiting draft, with the classification and completeness notes |
+| `uv run githubtriage approve <ref>` | Post the draft as is |
+| `uv run githubtriage edit <ref> --body-file reply.md` | Post your edited reply instead |
+| `uv run githubtriage reject <ref> [--reason "..."]` | Post nothing |
+| `uv run githubtriage triage <file> --json` | Print the full result as JSON |
+| add `-v` to any command | Show debug logs |
 | `uv run githubtriage --help` | Show usage |
 
-Exit codes: `0` triage ran (degraded runs included — errors are printed to stderr as warnings), `1` input file missing or invalid, `2` wrong usage. Results go to stdout; logs and warnings go to stderr.
+`<ref>` is an issue (`owner/repo#7`, meaning its one waiting draft) or an exact run id. Triaging an issue again **cancels** its waiting draft; after a reply was posted, a new triage may post again. Paused runs are stored in `.githubtriage/checkpoints.sqlite` and "posted" replies in `.githubtriage/outbox/` (relative to where you run the command; set `DATA_DIR` to change it).
+
+Exit codes: `0` success (degraded triage runs included — errors are printed to stderr as warnings), `1` bad input or nothing waiting, `2` wrong usage. Results go to stdout; logs and warnings go to stderr.
 
 ### Input format
 An issue file is JSON shaped like this (see [samples/issues/](samples/issues/) for 10 examples, including prompt-injection and edge cases):

@@ -19,6 +19,18 @@ def no_tracing(monkeypatch):
     monkeypatch.setattr(settings, "langsmith_tracing", False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_data_dir(monkeypatch, tmp_path):
+    """Every test gets its own empty data dir (checkpoints, outbox).
+
+    Tests never read or write the real .githubtriage folder, and can't see each
+    other's files. Returns the path so tests can inspect what was written.
+    """
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    return data_dir
+
+
 class FakeStructured:
     """Stands in for llm.with_structured_output(...): returns a result or raises."""
 
