@@ -20,6 +20,17 @@ def no_tracing(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def default_github_settings(monkeypatch):
+    """Every test starts from the safe GitHub defaults, whatever is in .env
+    (e.g. POST_MODE=github there must not make tests try to post).
+    Tests that need GitHub mode switch it on themselves."""
+    monkeypatch.setattr(settings, "post_mode", "outbox")
+    monkeypatch.setattr(settings, "post_allowed_repos", [])
+    monkeypatch.setattr(settings, "github_token", None)
+    monkeypatch.setattr(settings, "github_api_url", "https://api.github.com")
+
+
+@pytest.fixture(autouse=True)
 def isolated_data_dir(monkeypatch, tmp_path):
     """Every test gets its own empty data dir (checkpoints, outbox).
 

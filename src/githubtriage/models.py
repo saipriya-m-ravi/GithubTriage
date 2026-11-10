@@ -1,5 +1,4 @@
 import operator
-from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
@@ -9,7 +8,12 @@ class Issue(BaseModel):
     title: str
     body: str
     author: str
-    updated_at: datetime
+    # Timezone-aware (GitHub sends UTC, e.g. "2026-11-05T10:00:00Z"): naive vs
+    # aware comparisons raise.
+    updated_at: AwareDatetime
+    # Set when the issue was fetched from GitHub; None for local issue files.
+    # The stale check only runs for issues that exist on GitHub.
+    html_url: str | None = None
 
     @field_validator("body", mode="before")
     @classmethod
@@ -159,4 +163,7 @@ class TriageState(BaseModel):
     # R6 — None until the maintainer decides / the comment is posted.
     decision: Decision | None = None
     posted_comment_id: str | None = None  # set once posted; prevents posting twice
+    # Set if the issue changed after triage (edited, or new comments): the draft is
+    # discarded, not posted, and the maintainer is asked to re-triage.
+    stale_reason: str | None = None
     errors: Annotated[list[str], operator.add] = []

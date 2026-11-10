@@ -273,3 +273,37 @@ def test_resume_from_sqlite_with_a_fresh_graph(use_fake_llm):
         graph.invoke(Command(resume=decide("approve")), config=CONFIG)
 
     assert outbox_path(RUN).exists()
+
+
+# --- Stale drafts are discarded ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stale_reason, expected", [(None, "post"), ("the issue was edited", "__end__")]
+)
+def test_router_after_stale_check(stale_reason, expected):
+    from githubtriage.graph import route_after_stale_check
+
+    state = make_input().model_copy(update={"stale_reason": stale_reason})
+    assert route_after_stale_check(state) == expected
+
+
+def test_stale_draft_is_not_posted(use_fake_llm, monkeypatch):
+    use_fake_llm(result=classified("feature"))
+    # Patch where it's USED: graph.py holds its own reference after `from ... import`.
+    monkeypatch.setattr(
+        "githubtriage.graph.stale_check",
+        lambda state, config: {"stale_reason": "the issue was edited"},
+    )
+    # The graph is built after patching, so it uses the fake stale check.
+    graph = build_graph(checkpointer=memory_checkpointer())
+
+    graph.invoke(make_input(), config=CONFIG)
+    done = TriageState.model_validate(
+        graph.invoke(Command(resume=decide("approve")), config=CONFIG)
+    )
+
+    assert done.stale_reason == "the issue was edited"
+    assert done.posted_comment_id is None
+    assert not outbox_path(RUN).exists()
+    assert graph.get_state(CONFIG).next == ()  # finished: discarded, not stuck

@@ -14,7 +14,8 @@ Built in 8 vertical slices, each adding one capability to a system that already 
 - ✅ **Slice 1:** classify an issue (one structured LLM call with prompt-injection guardrails) → template-based draft reply → CLI.
 - ✅ **Slice 2:** completeness check for bugs (conditional routing) → "please add…" requests from fixed, allowlisted wording.
 - ✅ **Slice 3:** human approval — the run pauses, survives restarts (SQLite checkpoints), and resumes on approve / edit / reject; posting is idempotent per run (tested through a simulated crash). Replies go to a local outbox until the GitHub API arrives in slice 4.
-- ⏳ Slices 4–8: GitHub API, duplicate finder (RAG), grounded answers, FastAPI service, reproduction agent.
+- 🔄 **Slice 4:** live GitHub issues — triage by `owner/repo#N` or URL, real comments posted only to allowlisted repos (exactly once per run, author-verified marker), and stale drafts discarded if the issue was edited or commented on after triage. Tested against fake and **recorded, anonymised** GitHub responses. *Next: the first real eval set (pydantic/pydantic labels).*
+- ⏳ Slices 5–8: duplicate finder (RAG), grounded answers, FastAPI service, reproduction agent.
 
 ## Running it
 
@@ -66,16 +67,24 @@ Waiting for approval: githubtriage approve|edit|reject example-org/datekit#111
 | `uv run githubtriage approve <ref>` | Post the draft as is |
 | `uv run githubtriage edit <ref> --body-file reply.md` | Post your edited reply instead |
 | `uv run githubtriage reject <ref> [--reason "..."]` | Post nothing |
-| `uv run githubtriage triage <file> --json` | Print the full result as JSON |
+| `uv run githubtriage retry <ref>` | Approved, but posting failed (e.g. GitHub was down): try posting again |
+| `uv run githubtriage triage owner/repo#7` | Triage a **live** GitHub issue (also accepts the issue's URL) |
+| `uv run githubtriage triage <source> --json` | Print the full result as JSON |
 | add `-v` to any command | Show debug logs |
 | `uv run githubtriage --help` | Show usage |
+
+Live triage works anonymously for public repositories (60 GitHub requests/hour); set `GITHUB_TOKEN` (see `.env.example`) for private repositories and 5,000 requests/hour. Pull requests are refused.
+
+**Where approved replies go:** by default to a local outbox (`.githubtriage/outbox/`) — nothing is posted to GitHub. To post real comments, set `POST_MODE=github`, `GITHUB_TOKEN`, and `POST_ALLOWED_REPOS` — **only repositories you own**; posting anywhere else is refused. Each reply carries a hidden marker, so a retry never posts it twice.
+
+**Stale drafts aren't posted:** before posting a reply to a live issue, GithubTriage checks whether the issue was edited, or someone else commented, since it was triaged. If so, the draft is discarded and you're asked to triage again, so a reply never ignores information added in the meantime.
 
 `<ref>` is an issue (`owner/repo#7`, meaning its one waiting draft) or an exact run id. Triaging an issue again **cancels** its waiting draft; after a reply was posted, a new triage may post again. Paused runs are stored in `.githubtriage/checkpoints.sqlite` and "posted" replies in `.githubtriage/outbox/` (relative to where you run the command; set `DATA_DIR` to change it).
 
 Exit codes: `0` success (degraded triage runs included — errors are printed to stderr as warnings), `1` bad input or nothing waiting, `2` wrong usage. Results go to stdout; logs and warnings go to stderr.
 
 ### Input format
-An issue file is JSON shaped like this (see [samples/issues/](samples/issues/) for 10 examples, including prompt-injection and edge cases):
+An issue file is JSON shaped like this (see [samples/issues/](samples/issues/) for 13 examples, including prompt-injection and edge cases):
 ```json
 {
   "repo": "example-org/datekit",
@@ -101,20 +110,36 @@ uv run pytest              # all tests; uses a fake LLM, no network or API key n
 uv run ruff check .        # lint
 uv run ruff format .       # format
 ```
+Tests never call GitHub: they use hand-written fakes plus real GitHub responses recorded in `tests/fixtures/github/`. To refresh the recordings (read-only; needs `GITHUB_TOKEN` with access to the sandbox repo named in the script):
+```bash
+uv run python debug_helper_scripts/record_github_fixtures.py
+```
+Logins, e-mails and third-party text are anonymised before anything is written.
 
 ### Project layout
 ```
 src/githubtriage/
-  config.py          settings from .env (pydantic-settings)
-  models.py          Issue, Classification, TriageState
-  llm.py             creates the chat model
-  nodes/classify.py  R1: structured LLM classification + guardrails
-  nodes/draft.py     R5: template-based draft reply
-  graph.py           LangGraph workflow
-  cli.py             command-line adapter
-tests/               pytest suite (shared fakes in conftest.py)
-samples/issues/      sample issues + expected.json
-docs/DESIGN.md       design decisions, threat model
+  config.py              settings from .env (pydantic-settings)
+  models.py              Issue, Classification, Completeness, Decision, TriageState
+  llm.py                 creates the chat model
+  issue_text.py          sanitising + truncation of issue text for prompts
+  nodes/classify.py      R1: structured LLM classification + guardrails
+  nodes/completeness.py  R3: is a bug report complete?
+  nodes/draft.py         R5: template-based draft reply ("please add…" from an allowlist)
+  nodes/approval.py      R6: notify + pause for the maintainer's decision
+  nodes/post.py          R6: stale check + idempotent posting (outbox or GitHub)
+  graph.py               LangGraph workflow (code-routed)
+  checkpointing.py       SQLite checkpoints, run ids, waiting/stuck runs
+  github_client.py       small httpx GitHub REST client (errors, retries, pagination)
+  github_issues.py       issue refs/URLs; GitHub JSON → TriageState
+  repo_names.py          the one owner/name validation rule
+  observability.py       LangSmith tracing + run metadata
+  cli.py                 command-line adapter
+tests/                   pytest suite (shared fakes in conftest.py)
+tests/fixtures/github/   recorded, anonymised GitHub responses
+samples/issues/          sample issues + expected.json
+debug_helper_scripts/    run_samples.py, show_run.py, record_github_fixtures.py
+docs/DESIGN.md           design decisions, threat model
 ```
 
 ## Design

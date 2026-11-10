@@ -6,6 +6,7 @@ exactly how `triage` and a later `approve` work for real.
 import json
 import re
 
+import httpx
 import pytest
 
 from githubtriage.cli import EXIT_BAD_INPUT, EXIT_OK, main
@@ -100,7 +101,7 @@ def test_missing_file_exits_1(tmp_path, capsys):
 
     out, err = capsys.readouterr()
     assert code == EXIT_BAD_INPUT
-    assert "file not found" in err
+    assert "no such file, and not an issue reference" in err
     assert out == ""
 
 
@@ -115,6 +116,106 @@ def test_invalid_file_exits_1(tmp_path, capsys):
     assert "invalid issue file" in err
     assert "issue_number" in err  # Pydantic names the missing field
     assert out == ""
+
+
+# --- triage a live issue (GitHub answered by httpx.MockTransport) -----------
+
+
+def github_issue_json(number=7, **overrides) -> dict:
+    raw = {
+        "number": number,
+        "title": "App crashes on login",
+        "body": "Clicking Sign in shows a blank page.",
+        "user": {"login": "alice"},
+        "updated_at": "2026-11-05T10:00:00Z",
+        "repository_url": "https://api.github.com/repos/owner/repo",
+    }
+    raw.update(overrides)
+    return raw
+
+
+@pytest.fixture
+def fake_github(monkeypatch):
+    """Point the CLI's GitHubClient at a fake transport; returns the request log."""
+    from githubtriage import cli
+    from githubtriage.github_client import GitHubClient
+
+    responses, requests = [], []
+
+    def handler(request):
+        requests.append(request)
+        return responses.pop(0)
+
+    monkeypatch.setattr(
+        cli,
+        "GitHubClient",
+        lambda token, url: GitHubClient(
+            token, url, transport=httpx.MockTransport(handler), sleep=lambda s: None
+        ),
+    )
+    return responses, requests
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["owner/repo#7", "https://github.com/owner/repo/issues/7#issuecomment-1"],
+    ids=["ref", "url"],
+)
+def test_triage_a_live_issue(ref, fake_github, fake_bug, capsys):
+    responses, requests = fake_github
+    responses.append(httpx.Response(200, json=github_issue_json()))
+
+    code = main(["triage", ref])
+
+    out, _ = capsys.readouterr()
+    assert code == EXIT_OK
+    assert requests[0].url.path == "/repos/owner/repo/issues/7"
+    assert run_id(out).startswith("owner/repo#7@")
+    assert TYPE_MESSAGES["bug"] in out
+
+
+def test_pull_request_url_is_refused_without_calling_github(fake_github, capsys):
+    _, requests = fake_github
+
+    code = main(["triage", "https://github.com/owner/repo/pull/9"])
+
+    assert code == EXIT_BAD_INPUT
+    assert "is a pull request" in capsys.readouterr().err
+    assert requests == []
+
+
+def test_pull_request_number_is_refused_after_fetching(fake_github, capsys):
+    responses, _ = fake_github
+    responses.append(
+        httpx.Response(200, json=github_issue_json(number=9, pull_request={}))
+    )
+
+    assert main(["triage", "owner/repo#9"]) == EXIT_BAD_INPUT
+    assert "#9 is a pull request" in capsys.readouterr().err
+
+
+def test_not_found_anonymously_suggests_a_token(fake_github, monkeypatch, capsys):
+    monkeypatch.setattr(settings, "github_token", None)
+    responses, _ = fake_github
+    responses.append(httpx.Response(404, json={"message": "Not Found"}))
+
+    assert main(["triage", "owner/private#7"]) == EXIT_BAD_INPUT
+    err = capsys.readouterr().err
+    assert "not found, or no access" in err
+    assert "Set GITHUB_TOKEN if the repository is private" in err
+
+
+def test_rate_limit_message_is_clear(fake_github, capsys):
+    responses, _ = fake_github
+    responses.append(
+        httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "9999999999"},
+        )
+    )
+
+    assert main(["triage", "owner/repo#7"]) == EXIT_BAD_INPUT
+    assert "rate limit reached; retry in" in capsys.readouterr().err
 
 
 # --- show / approve / edit / reject (separate "processes") -------------------
@@ -218,3 +319,54 @@ def test_retriage_after_posting_can_post_again(issue_file, fake_bug, capsys):
 
     # Two runs, two replies: the idempotency key is the run, not the issue.
     assert len(outbox_files()) == 2
+
+
+# --- Posting fails after approval -> retry ------------------------------------
+
+
+def test_failed_posting_can_be_retried(issue_file, fake_bug, monkeypatch, capsys):
+    from githubtriage.github_client import GitHubError
+
+    main(["triage", str(issue_file)])
+    capsys.readouterr()
+
+    def github_down(thread, text):
+        raise GitHubError("GitHub unavailable (502)")
+
+    with monkeypatch.context() as m:
+        m.setattr("githubtriage.nodes.post._post_to_outbox", github_down)
+        code = main(["approve", "owner/repo#7"])
+
+    err = capsys.readouterr().err
+    assert code == EXIT_BAD_INPUT
+    assert "posting failed" in err
+    assert "githubtriage retry owner/repo#7" in err  # says how to recover
+    assert outbox_files() == []
+
+    # Nothing is waiting for a decision any more — the decision is saved...
+    assert main(["approve", "owner/repo#7"]) == EXIT_BAD_INPUT
+    capsys.readouterr()
+    # ...so `retry` resumes the stuck run and posts, without deciding again.
+    assert main(["retry", "owner/repo#7"]) == EXIT_OK
+    assert "Posted: outbox:" in capsys.readouterr().out
+    assert len(outbox_files()) == 1
+
+
+def test_retry_with_nothing_stuck_exits_1(capsys):
+    assert main(["retry", "owner/repo#7"]) == EXIT_BAD_INPUT
+    assert "no approved run waiting to be retried" in capsys.readouterr().err
+
+
+def test_decision_commands_accept_an_issue_url(issue_file, fake_bug, capsys):
+    # Same reference forms as `triage`: owner/repo#7 or the issue's URL.
+    main(["triage", str(issue_file)])
+    capsys.readouterr()
+
+    assert main(["show", "https://github.com/owner/repo/issues/7"]) == EXIT_OK
+    assert main(["approve", "https://github.com/owner/repo/issues/7"]) == EXIT_OK
+    assert "Posted: outbox:" in capsys.readouterr().out
+
+
+def test_decision_command_refuses_a_pull_request_url(capsys):
+    assert main(["approve", "https://github.com/owner/repo/pull/9"]) == EXIT_BAD_INPUT
+    assert "is a pull request" in capsys.readouterr().err

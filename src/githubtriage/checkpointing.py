@@ -31,6 +31,7 @@ from githubtriage.models import (
     Issue,
     TriageState,
 )
+from githubtriage.repo_names import REPO_PATTERN
 
 # TriageState itself is stored too: LangGraph saves the input passed to invoke()
 # (a whole TriageState) in the checkpoint, not only the individual field values.
@@ -81,14 +82,11 @@ def sqlite_checkpointer(path: Path) -> Iterator[SqliteSaver]:
 #     owner/repo#7@20261104T101500.123456Z
 # and an issue can have several runs over time.
 
-_THREAD_PATTERN = re.compile(
-    r"^(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)#(?P<number>\d+)@(?P<run>[0-9T.]+Z)$"
-)
+_REPO = REPO_PATTERN.pattern.strip("^$")  # the shared owner/name rule, unanchored
+_THREAD_PATTERN = re.compile(rf"^(?P<repo>{_REPO})#(?P<number>\d+)@(?P<run>[0-9T.]+Z)$")
 
 
-_ISSUE_PATTERN = re.compile(
-    r"^(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)#(?P<number>\d+)$"
-)
+_ISSUE_PATTERN = re.compile(rf"^(?P<repo>{_REPO})#(?P<number>\d+)$")
 
 
 def issue_key(repo: str, issue_number: int) -> str:
@@ -121,6 +119,13 @@ def parse_thread_id(thread: str) -> tuple[str, int]:
     return match["repo"], int(match["number"])
 
 
+def thread_started_at(thread: str) -> datetime:
+    """When this run started (from its id). Anything the run posted is newer."""
+    parse_thread_id(thread)  # validates
+    run = thread.rsplit("@", 1)[1]  # e.g. "20261105T160005.835940Z"
+    return datetime.strptime(run, "%Y%m%dT%H%M%S.%fZ").replace(tzinfo=UTC)
+
+
 def thread_config(thread: str) -> dict:
     """The config that tells the checkpointer which run to save or resume."""
     return {"configurable": {"thread_id": thread}}
@@ -131,17 +136,29 @@ def all_threads(saver: BaseCheckpointSaver) -> set[str]:
     return {c.config["configurable"]["thread_id"] for c in saver.list(None)}
 
 
-def waiting_runs(
-    graph: CompiledStateGraph, saver: BaseCheckpointSaver, repo: str, issue_number: int
-) -> list[str]:
-    """Runs of this issue that are paused, waiting for a maintainer's decision."""
+def _runs_at(graph, saver, repo: str, issue_number: int, nodes: set) -> list[str]:
+    """Runs of this issue whose next step is one of `nodes`."""
     prefix = issue_key(repo, issue_number) + "@"
     return sorted(
         t
         for t in all_threads(saver)
-        if t.startswith(prefix)
-        and graph.get_state(thread_config(t)).next == ("approval",)
+        if t.startswith(prefix) and graph.get_state(thread_config(t)).next in nodes
     )
+
+
+def waiting_runs(
+    graph: CompiledStateGraph, saver: BaseCheckpointSaver, repo: str, issue_number: int
+) -> list[str]:
+    """Runs of this issue that are paused, waiting for a maintainer's decision."""
+    return _runs_at(graph, saver, repo, issue_number, {("approval",)})
+
+
+def stuck_runs(
+    graph: CompiledStateGraph, saver: BaseCheckpointSaver, repo: str, issue_number: int
+) -> list[str]:
+    """Approved runs that failed before finishing (e.g. posting failed): resuming
+    them retries from the failed step, with the decision already saved."""
+    return _runs_at(graph, saver, repo, issue_number, {("stale_check",), ("post",)})
 
 
 def cancel_waiting_runs(

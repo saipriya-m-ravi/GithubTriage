@@ -1,0 +1,66 @@
+{
+  "method": "GET",
+  "path": "/repos/maintainer1/githubtriage-sandbox/issues/1",
+  "query": "",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "json": {
+    "url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/1",
+    "repository_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox",
+    "labels_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/1/labels{/name}",
+    "comments_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/1/comments",
+    "events_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/1/events",
+    "html_url": "https://github.com/maintainer1/githubtriage-sandbox/issues/1",
+    "id": 6218457321,
+    "node_id": "I_kwDOVjjeUc8AAAABcqYg6Q",
+    "number": 1,
+    "title": "Docs example passes max_concurrency inside configurable, where it is silently ignored",
+    "user": {
+      "login": "maintainer1",
+      "type": "User"
+    },
+    "labels": [],
+    "state": "open",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 3,
+    "created_at": "2026-11-05T07:02:20Z",
+    "updated_at": "2026-11-06T10:32:39Z",
+    "closed_at": null,
+    "assignee": null,
+    "author_association": "OWNER",
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+      "total": 0,
+      "completed": 0,
+      "percent_completed": 0
+    },
+    "issue_dependencies_summary": {
+      "blocked_by": 0,
+      "total_blocked_by": 0,
+      "blocking": 0,
+      "total_blocking": 0
+    },
+    "body": "Reproduction Steps / Example Code (Python)\nimport asyncio\nimport operator\nfrom typing import Annotated, TypedDict\n\nfrom langgraph.graph import START, StateGraph\nfrom langgraph.types import Send\n\nrunning = 0\npeak = 0\n\n\nclass State(TypedDict):\n    out: Annotated[list, operator.add]\n\n\nasync def work(payload):\n    global running, peak\n    running += 1\n    peak = max(peak, running)\n    await asyncio.sleep(0.05)\n    running -= 1\n    return {\"out\": [payload[\"i\"]]}\n\n\nbuilder = StateGraph(State)\nbuilder.add_node(\"start\", lambda state: {})\nbuilder.add_node(\"work\", work)\nbuilder.add_edge(START, \"start\")\nbuilder.add_conditional_edges(\"start\", lambda state: [Send(\"work\", {\"i\": i}) for i in range(40)], [\"work\"])\ngraph = builder.compile()\n\nfor label, config in (\n    (\"top-level\", {\"max_concurrency\": 4}),\n    (\"inside configurable (as in the docs)\", {\"configurable\": {\"max_concurrency\": 4}}),\n    (\"not set\", {}),\n):\n    peak = 0\n    asyncio.run(graph.ainvoke({\"out\": []}, config))\n    print(f\"{label:<38} peak concurrent tasks = {peak}\")\nError Message and Stack Trace (if applicable)\nNo error. Output:\n\ntop-level                              peak concurrent tasks = 4\ninside configurable (as in the docs)   peak concurrent tasks = 40\nnot set                                peak concurrent tasks = 40\n\nDescription:\n\nThe \"Set max concurrency\" tip on the Use the Graph API page (https://docs.langchain.com/oss/python/langgraph/use-graph-api) says:\n\nYou can control the maximum number of concurrent tasks by setting max_concurrency in the configuration when invoking the graph.\n\nand shows:\n\ngraph.invoke({\"value_1\": \"c\"}, {\"configurable\": {\"max_concurrency\": 10}})\nOn langgraph 1.2.11, max_concurrency placed inside configurable has no effect: a Send fan-out runs with the same peak concurrency as when the key is not set at all. The same key at the top level of the config works as expected. No warning or error is raised for the ignored placement.\n\nThe Graph API page already warns that recursion_limit \"is a standalone config key and should not be passed inside the configurable key\", but the max_concurrency tip does the opposite.\n\nSystem Info\nlanggraph 1.2.11\nlangchain-core 1.6.2\nPython 3.13.9\nWindows 11",
+    "closed_by": null,
+    "reactions": {
+      "url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/1/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/1/timeline",
+    "performed_via_github_app": null,
+    "state_reason": null,
+    "pinned_comment": null
+  }
+}

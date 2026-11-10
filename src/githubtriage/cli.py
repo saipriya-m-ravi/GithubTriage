@@ -1,10 +1,15 @@
 """Command-line adapter: triage an issue, then approve, edit or reject the draft.
 
-    githubtriage triage samples/issues/bug.json      # runs until approval
+    githubtriage triage pydantic/pydantic#12580      # live issue (or its URL)
+    githubtriage triage samples/issues/bug.json      # or a local issue file
     githubtriage show    owner/repo#7                # the waiting draft
     githubtriage approve owner/repo#7
     githubtriage edit    owner/repo#7 --body-file reply.md
     githubtriage reject  owner/repo#7 --reason "duplicate of #99"
+    githubtriage retry   owner/repo#7                # approved, but posting failed
+
+Approved replies go to the local outbox unless POST_MODE=github (then a real
+comment, only on repositories in POST_ALLOWED_REPOS).
 
 `triage` and the decision commands are separate processes: the paused run is
 saved in a SQLite checkpoint (settings.checkpoint_path) and resumed from there.
@@ -33,16 +38,29 @@ from githubtriage.checkpointing import (
     cancel_waiting_runs,
     issue_key,
     new_thread_id,
-    parse_issue_key,
     parse_thread_id,
     sqlite_checkpointer,
+    stuck_runs,
     thread_config,
     waiting_runs,
 )
 from githubtriage.config import settings
+from githubtriage.github_client import (
+    AuthError,
+    GitHubClient,
+    GitHubError,
+    NotFoundError,
+    RateLimitError,
+)
+from githubtriage.github_issues import (
+    NotAnIssueError,
+    parse_issue_ref,
+    state_from_github,
+)
 from githubtriage.graph import build_graph
 from githubtriage.models import Decision, TriageState
 from githubtriage.nodes.approval import build_approval_request
+from githubtriage.nodes.post import PostNotAllowedError
 from githubtriage.observability import (
     TracingConfigError,
     configure_tracing,
@@ -54,6 +72,7 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_BAD_INPUT = 1
 EXIT_CONFIG_ERROR = 1
+EXIT_NOT_POSTED = 1  # approved, but the draft was stale and discarded
 
 
 class CliError(Exception):
@@ -76,7 +95,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     common.add_argument("-v", "--verbose", action="store_true", help="show debug logs")
 
     decider = argparse.ArgumentParser(add_help=False)  # for approve / edit / reject
-    decider.add_argument("ref", help="issue (owner/repo#7) or exact run id")
+    decider.add_argument("ref", help="issue (owner/repo#7 or its URL) or exact run id")
     decider.add_argument(
         "--approver", default=_default_approver(), help="who is deciding"
     )
@@ -88,15 +107,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     triage = sub.add_parser(
-        "triage", parents=[common], help="triage an issue file; pause for approval"
+        "triage", parents=[common], help="triage an issue; pause for approval"
     )
-    triage.add_argument("path", type=Path, help="path to an issue JSON file")
+    triage.add_argument(
+        "source",
+        help="a live issue (owner/repo#7 or its GitHub URL) or an issue JSON file",
+    )
     triage.add_argument(
         "--json", action="store_true", help="print the full result as JSON"
     )
 
     show = sub.add_parser("show", parents=[common], help="show a waiting draft")
-    show.add_argument("ref", help="issue (owner/repo#7) or exact run id")
+    show.add_argument("ref", help="issue (owner/repo#7 or its URL) or exact run id")
 
     sub.add_parser("approve", parents=[common, decider], help="post the draft as is")
 
@@ -109,6 +131,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     reject = sub.add_parser("reject", parents=[common, decider], help="post nothing")
     reject.add_argument("--reason", help="why (kept in the decision record)")
+
+    retry = sub.add_parser(
+        "retry", parents=[common], help="retry an approved run whose posting failed"
+    )
+    retry.add_argument("ref", help="issue (owner/repo#7 or its URL) or exact run id")
 
     return parser.parse_args(argv)
 
@@ -137,6 +164,52 @@ def _load_state(path: Path) -> TriageState:
         raise CliError(f"invalid issue file {path}:\n{e}") from None
 
 
+def _fetch_state(repo: str, number: int) -> TriageState:
+    """Fetch a live issue from GitHub, as a CliError on expected problems."""
+    anonymous = (
+        settings.github_token is None or not settings.github_token.get_secret_value()
+    )
+    if anonymous:
+        logger.warning(
+            "No GITHUB_TOKEN: anonymous access (60 requests/hour, public repos only)"
+        )
+    token_hint = " Set GITHUB_TOKEN" if anonymous else ""
+    try:
+        with GitHubClient(settings.github_token, settings.github_api_url) as gh:
+            return state_from_github(gh.get_issue(repo, number))
+    except NotAnIssueError as e:
+        raise CliError(str(e)) from None
+    except NotFoundError:
+        hint = f"{token_hint} if the repository is private." if anonymous else ""
+        raise CliError(f"{repo}#{number}: not found, or no access.{hint}") from None
+    except RateLimitError as e:
+        hint = f"{token_hint} for 5,000 requests/hour." if anonymous else ""
+        raise CliError(
+            f"GitHub rate limit reached; retry in {e.retry_after / 60:.0f} min.{hint}"
+        ) from None
+    except AuthError:
+        raise CliError("GITHUB_TOKEN is invalid or lacks permission") from None
+    except GitHubError as e:
+        raise CliError(f"GitHub request failed: {e}") from None
+
+
+def _triage_input(source: str) -> TriageState:
+    """A file path if that file exists; otherwise an issue reference or URL."""
+    path = Path(source)
+    if path.is_file():
+        return _load_state(path)
+    try:
+        ref = parse_issue_ref(source)
+    except NotAnIssueError as e:  # a pull-request URL: no API call needed
+        raise CliError(str(e)) from None
+    if ref is None:
+        raise CliError(
+            f"{source}: no such file, and not an issue reference "
+            "(owner/repo#7 or https://github.com/owner/repo/issues/7)"
+        )
+    return _fetch_state(*ref)
+
+
 def _run_config(repo: str, issue_number: int, thread: str) -> dict:
     """Tracing metadata + which run to save/resume."""
     return {
@@ -151,6 +224,18 @@ def _run_config(repo: str, issue_number: int, thread: str) -> dict:
     }
 
 
+def _issue_from_ref(ref: str) -> tuple[str, int]:
+    """(repo, number) from "owner/repo#7" or an issue URL — the same forms
+    `triage` accepts. ValueError (incl. NotAnIssueError for a PR URL) otherwise."""
+    issue = parse_issue_ref(ref)
+    if issue is None:
+        raise ValueError(
+            f"invalid issue reference: {ref!r} "
+            "(expected owner/repo#7, an issue URL, or a run id)"
+        )
+    return issue
+
+
 def _resolve(graph, saver, ref: str) -> str:
     """The waiting run a ref points to: an exact run id, or an issue's one draft."""
     try:
@@ -162,7 +247,7 @@ def _resolve(graph, saver, ref: str) -> str:
                     "by a newer triage of the same issue)"
                 )
             return ref
-        repo, number = parse_issue_key(ref)
+        repo, number = _issue_from_ref(ref)
     except ValueError as e:
         raise CliError(str(e)) from None
 
@@ -188,7 +273,7 @@ def _print_human(result: TriageState) -> None:
 
 
 def _triage(args, graph, saver) -> int:
-    state = _load_state(args.path)
+    state = _triage_input(args.source)
 
     # A newer triage replaces any draft of this issue still waiting for approval,
     # so at most one draft per issue is ever waiting.
@@ -212,6 +297,16 @@ def _triage(args, graph, saver) -> int:
     # Degraded runs still produced a draft, so they exit 0 — but say so clearly.
     for error in result.errors:
         print(f"Warning: {error}", file=sys.stderr)
+    # Tell the maintainer now, not after they approve: post enforces the allowlist.
+    if (
+        settings.post_mode == "github"
+        and state.repo.lower() not in settings.post_allowed_repos
+    ):
+        print(
+            f"Note: posting to {state.repo} is not allowed (POST_ALLOWED_REPOS); "
+            "approving this draft will fail.",
+            file=sys.stderr,
+        )
     return EXIT_OK
 
 
@@ -246,18 +341,69 @@ def _decide(args, graph, saver, **decision_fields) -> int:
     except ValidationError as e:
         raise CliError(f"invalid decision:\n{e}") from None
 
+    return _resume(graph, thread, Command(resume=decision.model_dump(mode="json")))
+
+
+def _resume(graph, thread: str, command) -> int:
+    """Run a paused or stuck run to the end and report the outcome."""
     repo, number = parse_thread_id(thread)
-    result = TriageState.model_validate(
-        graph.invoke(
-            Command(resume=decision.model_dump(mode="json")),
-            config=_run_config(repo, number, thread),
+    try:
+        result = TriageState.model_validate(
+            graph.invoke(command, config=_run_config(repo, number, thread))
         )
-    )
-    if result.posted_comment_id:
-        print(f"Posted: {result.posted_comment_id}")
+    except (GitHubError, PostNotAllowedError) as e:
+        # The decision is already saved; the run is stuck before/at `post`.
+        raise CliError(
+            f"posting failed: {e}\nThe decision is saved. Fix the problem, then run: "
+            f"githubtriage retry {issue_key(repo, number)}"
+        ) from None
+
+    if result.stale_reason:
+        # Approved, but the issue changed after triage: the draft was discarded.
+        print(
+            f"Not posted: {result.stale_reason}. The draft was discarded.\n"
+            f"Re-triage to draft a reply from the current issue: "
+            f"githubtriage triage {issue_key(repo, number)}",
+            file=sys.stderr,
+        )
+        return EXIT_NOT_POSTED
+
+    posted = result.posted_comment_id
+    if posted and posted.startswith("github:"):
+        comment_id = posted.removeprefix("github:")
+        print(
+            f"Posted: https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
+        )
+    elif posted:
+        print(f"Posted: {posted}")
     else:
         print(f"Rejected: {thread} — nothing posted.")
     return EXIT_OK
+
+
+def _retry(args, graph, saver) -> int:
+    """Resume an approved run that failed before finishing (e.g. posting)."""
+    try:
+        if "@" in args.ref:
+            parse_thread_id(args.ref)
+            stuck = (
+                [args.ref]
+                if graph.get_state(thread_config(args.ref)).next
+                in (
+                    ("stale_check",),
+                    ("post",),
+                )
+                else []
+            )
+        else:
+            stuck = stuck_runs(graph, saver, *_issue_from_ref(args.ref))
+    except ValueError as e:
+        raise CliError(str(e)) from None
+    if len(stuck) != 1:
+        raise CliError(f"no approved run waiting to be retried for {args.ref}")
+    # invoke(None) resumes from the last checkpoint: the failed step runs again,
+    # and post's marker check makes that safe.
+    return _resume(graph, stuck[0], None)
 
 
 def _approve(args, graph, saver) -> int:
@@ -282,6 +428,7 @@ COMMANDS = {
     "approve": _approve,
     "edit": _edit,
     "reject": _reject,
+    "retry": _retry,
 }
 
 

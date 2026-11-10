@@ -1,0 +1,126 @@
+{
+  "method": "GET",
+  "path": "/repos/maintainer1/githubtriage-sandbox/issues",
+  "query": "state=all&per_page=2",
+  "status": 200,
+  "headers": {
+    "link": "<https://api.github.com/repositories/1446567505/issues?state=all&per_page=2&after=Y3Vyc29yOnYyOpLPAAABoaqFqijPAAAAAXKmdak%3D&page=2>; rel=\"next\"",
+    "content-type": "application/json; charset=utf-8"
+  },
+  "json": [
+    {
+      "url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/3",
+      "repository_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox",
+      "labels_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/3/labels{/name}",
+      "comments_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/3/comments",
+      "events_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/3/events",
+      "html_url": "https://github.com/maintainer1/githubtriage-sandbox/issues/3",
+      "id": 6218547742,
+      "node_id": "I_kwDOVjjeUc8AAAABcqeCHg",
+      "number": 3,
+      "title": "How does create_react_agent work with Gemini 2.5 include_thoughts?",
+      "user": {
+        "login": "maintainer1",
+        "type": "User"
+      },
+      "labels": [],
+      "state": "open",
+      "locked": false,
+      "assignees": [],
+      "milestone": null,
+      "comments": 1,
+      "created_at": "2026-11-05T07:09:40Z",
+      "updated_at": "2026-11-06T07:52:17Z",
+      "closed_at": null,
+      "assignee": null,
+      "author_association": "OWNER",
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+        "blocked_by": 0,
+        "total_blocked_by": 0,
+        "blocking": 0,
+        "total_blocking": 0
+      },
+      "body": "The message sequence in the agent's state will include AIMessages with thinking content blocks:\n\nfrom langchain_google_genai import ChatGoogleGenerativeAI\nfrom langgraph.prebuilt import create_react_agent\n\n\ndef get_weather(location: str) -> str:\n    \"\"\"Get the weather at a location.\"\"\"\n    return \"It's sunny.\"\n\n\nllm = ChatGoogleGenerativeAI(model=\"gemini-2.5-pro\", include_thoughts=True)\ntools = [get_weather]\nagent = create_react_agent(llm, tools)\n\ninput_message = {\n    \"role\": \"user\",\n    \"content\": \"What's the weather in London?\",\n}\nfor step in agent.stream(\n    {\"messages\": [input_message]},\n    stream_mode=\"values\",\n):\n    step[\"messages\"][-1].pretty_print()\n================================ Human Message =================================\n\nWhat's the weather in London?\n================================== Ai Message ==================================\n\n[{'type': 'thinking', 'thinking': '**Thinking Through a Simple Weather Query**\\n\\nOkay, so the user wants the weather in London.  Straightforward enough. Looks like I\\'ve got a `get_weather(location)` tool at my disposal, which is exactly what I need. The function\\'s clearly expecting a `location` parameter, and the user\\'s helpfully given me \"London\".  Perfect.\\n\\nNow, all that\\'s left is to actually *use* the tool. Let me just call `get_weather` with \"London\" as the location. To clarify the process, I\\'ll print the function call I\\'m about to execute. I need to make sure everything\\'s correct and ready to run.  Here\\'s what I\\'ll do: `print(get_weather(location=\"London\"))`\\n'}]\nTool Calls:\n  get_weather (b4fd228f-767c-4ec5-9eff-1995337c085a)\n Call ID: b4fd228f-767c-4ec5-9eff-1995337c085a\n  Args:\n    location: London\n================================= Tool Message =================================\nName: get_weather\n\nIt's sunny.\n================================== Ai Message ==================================\n\nIt's sunny in London.",
+      "closed_by": null,
+      "reactions": {
+        "url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/3/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/3/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "pinned_comment": null
+    },
+    {
+      "url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/2",
+      "repository_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox",
+      "labels_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/2/labels{/name}",
+      "comments_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/2/comments",
+      "events_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/2/events",
+      "html_url": "https://github.com/maintainer1/githubtriage-sandbox/issues/2",
+      "id": 6218479017,
+      "node_id": "I_kwDOVjjeUc8AAAABcqZ1qQ",
+      "number": 2,
+      "title": "DOC: Typo in libs/langgraph/langgraph/graph/state.py on line 158",
+      "user": {
+        "login": "maintainer1",
+        "type": "User"
+      },
+      "labels": [],
+      "state": "open",
+      "locked": false,
+      "assignees": [],
+      "milestone": null,
+      "comments": 0,
+      "created_at": "2026-11-05T07:04:09Z",
+      "updated_at": "2026-11-05T07:04:09Z",
+      "closed_at": null,
+      "assignee": null,
+      "author_association": "OWNER",
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+        "blocked_by": 0,
+        "total_blocked_by": 0,
+        "blocking": 0,
+        "total_blocking": 0
+      },
+      "body": "Issue with current documentation:\nDescription\nThere is a typo in the libs/langgraph/langgraph/graph/state.py file on line 158. The code currently reads r = runtie.context.get(\"r\", 1.0) but it should be r = runtime.context.get(\"r\", 1.0).\n\ndef node(state: State, runtime: Runtime[Context]) -> dict:\n    r = runtie.context.get(\"r\", 1.0)\n    x = state[\"x\"][-1]\n    next_value = x * r * (1 - x)\n    return {\"x\": next_value}\nSteps to Reproduce\nNavigate to the libs/langgraph/langgraph/graph/state.py file in the repository.\nLocate line 158.\nObserve the typo runtie instead of runtime.\nProposed Solution\nChange runtie to runtime on line 158 to correct the typo.\n\nAdditional Context\nI have identified this issue while reviewing the code. If required, I can submit a Pull Request with the fix.",
+      "closed_by": null,
+      "reactions": {
+        "url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/2/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/maintainer1/githubtriage-sandbox/issues/2/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "pinned_comment": null
+    }
+  ]
+}

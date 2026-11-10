@@ -24,6 +24,13 @@ def route_after_classify(state: TriageState) -> Literal["completeness", "draft"]
     return "draft"  # default branch, including a missing classification
 
 
+def route_after_stale_check(state: TriageState) -> Literal["post", "__end__"]:
+    """A stale draft is discarded: end without posting (the maintainer re-triages)."""
+    if state.stale_reason is None:
+        return "post"
+    return "__end__"
+
+
 def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
     """Triage -> draft -> maintainer approval -> post.
 
@@ -46,6 +53,6 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStat
     builder.add_edge("draft", "notify")
     builder.add_edge("notify", "approval")
     builder.add_conditional_edges("approval", route_after_approval)
-    builder.add_edge("stale_check", "post")
+    builder.add_conditional_edges("stale_check", route_after_stale_check)
     builder.add_edge("post", END)
     return builder.compile(checkpointer=checkpointer)
