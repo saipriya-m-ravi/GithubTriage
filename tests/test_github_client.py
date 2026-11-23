@@ -242,6 +242,30 @@ def test_list_comments_since_and_complete():
     assert fake.requests[0].url.params["since"] == "2026-11-05T00:00:00Z"
 
 
+def test_list_issue_events_follows_pages():
+    fake = FakeGitHub(
+        page([{"event": "labeled"}], next_url="https://api.github.com/x?page=2"),
+        page([{"event": "unlabeled"}]),
+    )
+    with client(fake) as gh:
+        events = [e["event"] for e in gh.list_issue_events("owner/repo", 7)]
+
+    assert events == ["labeled", "unlabeled"]
+    assert fake.requests[0].url.path == "/repos/owner/repo/issues/7/events"
+
+
+def test_list_issue_events_is_always_complete(monkeypatch):
+    # A missing page could hide a maintainer's relabel: fail, don't guess.
+    from githubtriage.github_client import TruncatedError
+
+    monkeypatch.setattr("githubtriage.github_client.DEFAULT_MAX_PAGES", 1)
+    fake = FakeGitHub(
+        page([{"event": "labeled"}], next_url="https://api.github.com/x?page=2")
+    )
+    with client(fake) as gh, pytest.raises(TruncatedError):
+        list(gh.list_issue_events("owner/repo", 7))
+
+
 def test_get_authenticated_login():
     fake = FakeGitHub(ok({"login": "triage-bot", "id": 1}))
     with client(fake) as gh:

@@ -11,7 +11,7 @@ environment values the first time it reads them.
 import os
 
 from githubtriage.config import Settings
-from githubtriage.nodes.classify import PROMPT_VERSION as CLASSIFY_PROMPT_VERSION
+from githubtriage.nodes import classify as classify_node
 from githubtriage.nodes.completeness import (
     PROMPT_VERSION as COMPLETENESS_PROMPT_VERSION,
 )
@@ -66,7 +66,8 @@ def run_config(
             "model": model,
             "reasoning_effort": reasoning_effort or "default",
             "prompt_versions": {
-                "classify": CLASSIFY_PROMPT_VERSION,
+                # Read at call time: it's a setting, so a v2 run must say v2.
+                "classify": classify_node.prompt_version(),
                 "completeness": COMPLETENESS_PROMPT_VERSION,
             },
         },

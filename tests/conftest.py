@@ -31,6 +31,12 @@ def default_github_settings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def default_prompt_versions(monkeypatch):
+    """Tests run the default (live) prompt, whatever .env selects for experiments."""
+    monkeypatch.setattr(settings, "classify_prompt_version", "classify-v1")
+
+
+@pytest.fixture(autouse=True)
 def isolated_data_dir(monkeypatch, tmp_path):
     """Every test gets its own empty data dir (checkpoints, outbox).
 
@@ -50,7 +56,7 @@ class FakeStructured:
         self.error = error
         self.calls = []  # every `messages` list passed to invoke()
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.calls.append(messages)
         if self.error:
             raise self.error

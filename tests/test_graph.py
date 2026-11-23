@@ -163,6 +163,59 @@ def test_classify_sends_system_prompt_and_sanitised_issue(use_fake_llm):
     assert human_text.count("</issue>") == 1
 
 
+@pytest.mark.parametrize(
+    ("version", "has_abstain_rule"),
+    [("classify-v1", False), ("classify-v2", True)],
+)
+def test_prompt_version_setting_selects_the_prompt(
+    use_fake_llm, monkeypatch, version, has_abstain_rule
+):
+    # A feature flag: the live bot keeps v1 until v2 wins the eval.
+    from githubtriage.nodes.classify import ABSTAIN_RULE
+
+    monkeypatch.setattr(settings, "classify_prompt_version", version)
+    fake = use_fake_llm(
+        result=Classification(type="bug", confidence=0.9, reasoning="r")
+    )
+
+    run_graph(make_input())
+
+    system_text = fake.calls[0][0][1]
+    assert system_text.startswith(SYSTEM_PROMPT)  # v2 only adds; it never rewrites v1
+    assert (ABSTAIN_RULE in system_text) is has_abstain_rule
+
+
+def test_v3_uses_its_own_schema_and_returns_a_plain_classification(
+    use_fake_llm, monkeypatch
+):
+    from githubtriage.nodes.classify import SCHEMAS, _ClassificationV3
+
+    monkeypatch.setattr(settings, "classify_prompt_version", "classify-v3")
+    use_fake_llm(
+        result=_ClassificationV3(type="unclear", confidence=0.5, reasoning="r"),
+        schema=_ClassificationV3,
+    )
+
+    result = run_graph(make_input())
+
+    # The rest of the system (state, checkpoint allowlist) sees the base class.
+    assert type(result.classification) is Classification
+    assert result.classification.type == "unclear"
+    # v1's schema is untouched: its description still has the narrow `unclear`.
+    v1 = SCHEMAS["classify-v1"].model_fields["type"].description
+    v3 = SCHEMAS["classify-v3"].model_fields["type"].description
+    assert "intended behaviour" not in v1
+    assert "intended behaviour" in v3
+    # The model sees the schema as a tool: name = title, description = docstring.
+    # Both must match v1 — a developer docstring once leaked into the prompt.
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    tool_v1 = convert_to_openai_tool(SCHEMAS["classify-v1"])["function"]
+    tool_v3 = convert_to_openai_tool(_ClassificationV3)["function"]
+    assert tool_v3["name"] == tool_v1["name"] == "Classification"
+    assert tool_v3["description"] == tool_v1["description"]
+
+
 # --- Approval: pause, then resume with each decision ---
 
 

@@ -46,15 +46,15 @@ Template for each entry:
 
 ### R1. Classification
 - **Input:** issue title + body. **Decision:** one of 4 fixed types (bug / feature / question / docs), or `unclear`. **Output:** type + confidence + short reasoning. **Cost of error:** low (human reviews), but a wrong type routes the issue down the wrong branch.
-- **Executor:** Rule if an issue template was used; otherwise **one structured LLM call** (Pydantic `Literal` schema). Not an agent — nothing to look up, no step depends on an observation.
+- **Executor:** ~~Rule if an issue template was used;~~ otherwise **one structured LLM call** (Pydantic `Literal` schema). *The template rule is contradicted by real data (slice 4 module 8, below): on pydantic, 23 of 25 sampled questions were filed with the bug or feature form. The form is the reporter's guess, not a fact; it stays at most an input signal, to be measured as a baseline.* Not an agent — nothing to look up, no step depends on an observation.
 - **Tools needed:** none.
 - **Production risks → mitigations:**
   - Ambiguous / mixed issues → allow `unclear`; **`unclear` always needs a human, regardless of confidence** (see findings below); low confidence on other types also routes to a human once calibrated
-  - Overconfident model → calibrate confidence against eval set before using it in any rule
+  - Overconfident model → calibrate confidence against eval set before using it in any rule. *Measured (module 12): not usable — ECE 0.336, same confidence right or wrong; rules use `unclear` only.*
   - Prompt injection in body → delimit issue as data; classification never triggers writes on its own; HITL
   - Malformed output → native structured output + 1 retry + fallback to `unclear`
   - Cost at scale → small/cheap model is sufficient
-- **Eval metric:** accuracy / macro-F1 vs. maintainer labels on 50–100 closed issues.
+- **Eval metric:** accuracy / macro-F1 vs. maintainer labels on 50–100 closed issues. *Done in slice 4 (details below, from "Eval ground truth"):* 237 pydantic issues, dev 115 / test 122; reported as coverage + accuracy on answered, macro-F1, per class, and **kept-as-filed vs relabelled**. **Summary (dev, `classify-v1`):** 63.5% overall vs 41.1% "trust the form" and 25.2% "always bug"; **95.0% on issues kept as filed**, 29.1% on relabelled ones (construct validity — a known limit, option A); confidence unusable (ECE 0.336); abstention experiment failed (v2, v3). **Test split (measured once, 2026-11-21): 62.5% accuracy, macro-F1 60.0%, coverage 98.4%; 88.9% on issues kept as filed (63 answered of 65), 33.3% on relabelled; baselines 44.2% (form) / 25.4% (bug); ECE 0.342.** This is the number to quote.
 - **Findings from the slice 1 sample run** (10 samples, 10/10 correct — a behaviour check, not an accuracy measure):
   - **Confidence is not yet usable for decisions.** Every sample scored 0.80–0.99, so a rule like "human review below 0.7" would almost never trigger. Calibrate on the slice 4 eval set first.
   - **`unclear` and low confidence are different signals.** `unclear_mixed.json` came back `unclear` at 0.93 — the model is *confident the issue is mixed*. **Decision:** any routing rule treats `type == "unclear"` as needing human attention **regardless of confidence**; confidence thresholds apply only to the other types.
@@ -86,6 +86,120 @@ Template for each entry:
     - Token counts are not comparable across models (different tokenizers) — compare cost in money.
     - C's coarse confidence (0.95 on 7 of 10 samples) also limits its value for thresholds.
   - **Revisit C if** calibrated confidence becomes important (slice 4). **Re-evaluate both** on the slice 4 eval set (real issues + more adversarial cases, e.g. a bug report titled "Question"). Switching is a `.env` change only.
+- **Eval ground truth — pydantic/pydantic (slice 4 module 8, `evaluation/labels.py`, decided 2026-11-10):**
+  - *Label map:* `bug V2` → bug (V2 only: V1-era issues describe a different codebase), `feature request` → feature, `question` → question, `documentation` → docs.
+  - *Who applied a label matters.* pydantic's forms add labels automatically (`bug-v2.yml` → `bug V2` + `pending`; `feature_request.yml` → `feature request`; no question or docs forms), recorded in the issue events **as the reporter**. A form label is the reporter's guess; a maintainer's label is the judgement we want. `pending` = not triaged yet (a maintainer removes it). Use **who** (event actor), not **when**: template labels are recorded a second or so after creation.
+  - *Trust rule:* **gold** = a maintainer (not the reporter, not a bot) applied the label, removed `pending`, or filed the issue (`author_association` OWNER / MEMBER / COLLABORATOR). **silver** = reporter-only (D2: kept, reported separately). **Excluded** = still `pending` (D1: unreviewed), several of our labels (D3: ambiguous), none of ours. **Relabelled** issues (a maintainer replaced the reporter's label) are kept and flagged: they are the hard cases, and dropping them would inflate the score.
+  - *Event history must be complete* (`list_issue_events` raises `TruncatedError`): a missing page could hide a relabel.
+  - *Live check, 25 recent closed issues per label (read-only):*
+
+    | Label | Result |
+    |---|---|
+    | bug V2 | 21 gold · 4 excluded (still pending) |
+    | feature request | **18 silver** · 5 gold · 2 gold relabelled |
+    | question | **23 gold relabelled** · 1 gold · 1 excluded (question + documentation) |
+    | documentation | 5 gold relabelled · 1 gold · 1 silver (only 7 issues on the first page — the rest were PRs) |
+
+  - *What it means:*
+    - Questions almost always arrive **disguised as bug reports or feature requests** — R1 must judge the content, not the chosen form (hence the struck-out template rule above).
+    - **Most feature requests are unconfirmed** (silver): gold-only feature numbers will rest on few issues; report gold and silver separately.
+    - **Docs issues are scarce** among issues (most `documentation` items are PRs): the backfill needs to page further for docs.
+  - *`unclear` is an abstention, not an error* (D4: by design a human decides). The eval runner reports **coverage** (share of issues answered) next to **accuracy on answered issues**, so "always unclear" can't look perfect.
+  - *Never an input to the model:* labels and event history are the answer key only (leakage).
+  - *The reporter's form label* (`reporter_label`, their first label of ours) is stored for a **"trust the form" baseline** but is **never shown to the model** either. It isn't leakage (it exists at triage time), but it is reporter-controlled, and wrong for most questions: it would **anchor** the model on the reporter's mistake, and the baseline comparison would no longer be independent.
+- **The eval set (slice 4 module 9, `evaluation/dataset.py`, `debug_helper_scripts/backfill_eval.py`, built 2026-11-10):**
+  - *Selection (D1, D2):* closed issues **created** since 2024-01-01 (text written against the current codebase; listing is newest-created first, so paging stops at 2023), the newest **60 usable per label** — balanced, so per-class precision/recall is measurable for rare classes. Real per-type counts (search API) are stored in `evals/pydantic/frequencies.json` for a frequency-weighted accuracy: bug 1,112 · feature 274 · question 157 · docs 72.
+  - *Storage (D3):* `evals/pydantic/manifest.jsonl` (committed: numbers + answer key, no text, no authors) and `DATA_DIR/eval/pydantic_issues.jsonl` (gitignored: titles + bodies — other people's writing, not ours to republish). `--rebuild` recreates the texts from the manifest.
+  - *Resumable:* events are cached on disk (atomic writes) — the first real run died on a network drop and lost every request; closed issues' histories are settled, so the cache stays valid.
+  - *Result — 237 issues:*
+
+    | Type | Gold | Silver | Relabelled | "Trust the form" right |
+    |---|---|---|---|---|
+    | bug | 60 | 0 | 1 | 34/60 (25 had no form label) |
+    | feature | 19 | 41 | 10 | 45/60 |
+    | question | 60 | 0 | 56 | **0/60** |
+    | docs | 50 | 7 | 45 | 6/57 (all usable since 2024) |
+
+    Excluded: 24 bugs still `pending`; 16 issues with two of our labels (mostly docs + another).
+  - *What the baseline says:* trusting the reporter's form gets **85/237 (36%)** and **no question at all** — the bar R1 has to clear, and the reason R1 exists. Issues with no form label give the baseline no answer (it abstains, like `unclear`).
+  - *Frozen:* re-collecting later would pick a different "newest 60" and silently change what we measure on, so the backfill refuses to overwrite the manifest without `--force` (and then keeps the splits of issues still present).
+  - *Caveats:* "newest 60" over-represents recent issues; features rest mostly on silver labels; docs has 57, not 60; issue bodies are fetched as they are **now** (possibly edited after triage).
+- **Dev / test split (slice 4 module 10, `evaluation/split.py`, 2026-11-11):**
+  - *Why:* tuning a prompt while watching the score **is** training — with my judgement as the optimiser — and fitting to the data it's scored on makes the number optimistic (plus picking the best of many configurations is biased upward by chance alone). **dev** = tune, compare, read individual errors; **test** = the final measurement only, never used for a decision.
+  - *How:* **stratified** by (type, trust, relabelled), each group cut **exactly** in half (a plain `hash < 0.5` is only 50/50 on average — a 57-issue class can come out 22/35); within a group, ordered by **SHA-256 of `repo#number`** (fixed and effectively random; the API's newest-first order would make a hidden time split); an odd group's extra issue goes to test. **Frozen:** assigned issues never move — re-cutting a grown group would move the cut point and slide test issues into dev — new issues are split among themselves. Stored in the manifest (`split`), so git shows any change.
+  - *Result:* **115 dev / 122 test** — e.g. relabelled questions 28/28, silver features 20/21, docs (all strata) 27/30.
+  - *Access rule (enforced in module 11, not a promise):* the runner prints per-issue results for dev only; on test it prints summary numbers only and appends every run to a log (date, configuration, scores), so test-set reuse is visible.
+  - *Later:* issues created after the backfill are a natural **drift check** (a time-based test), once the system is tuned.
+- **Eval runner (slice 4 module 11, `evaluation/runner.py`, `evaluation/metrics.py`, `debug_helper_scripts/run_eval.py`, 2026-11-11):**
+  - *The real constraint is throughput, not money.* Groq limits on this account: 30 requests and **8,000 tokens per minute**, 1,000 requests and **200,000 tokens per day**. Measured **~1,300–1,470 tokens per call** on real issues (the `unicode.json` sample suggested 557 — estimate from representative data) → **~5 calls/minute, ~140/day**; one full dev pass (115) uses most of a day. Cost is ~$0.26 per 1,000 issues.
+  - *Decisions:* **1 run per configuration** (repeated runs would triple every evaluation; run-to-run variation to be measured once on a subset with `--runs 2` — runs are cached separately); **one call at a time, paced by a client-side token budget** (7,000/min, below the 8,000 limit — parallel calls would only become 429s); **failures reported separately, never scored**; complete test runs logged to `evals/pydantic/test_runs.jsonl`.
+  - *Same code path as production:* the classify node was split into `classify_issue()` (one LLM call, **raises** on failure) and the node (falls back to `unclear`). The eval calls `classify_issue`, so it measures the production prompt — but a network error is not counted as the model choosing to abstain. Tokens come from LangChain's `UsageMetadataCallbackHandler`.
+  - *Cache:* predictions keyed by **configuration** (`model__effort__prompt-version`), issue and run, in `DATA_DIR/eval/predictions/`. A run stopped by `--max-calls` or a rate limit resumes exactly where it stopped; re-scoring costs nothing; a configuration is never paid for twice; changing the prompt version can't mix old and new results.
+  - *Order:* issues are processed in **hash order**, so a partial run (`--max-calls 40`) is a mixed **quick-dev sample**, not "the first 40 bugs" (the first smoke run, in manifest order, was 5/5 bugs).
+  - *Baselines are scored on exactly the issues the model was scored on* — the first version compared the model on 5 issues with baselines on 115.
+  - *Report:* coverage + accuracy on answered (D4), macro-F1, frequency-weighted accuracy, per-class coverage/precision/recall, gold / silver / relabelled breakdown, "always bug" and "trust the form" baselines, confusion matrix with abstentions, tokens, p50/p95 latency, cost. `--show-errors` (dev only) lists each misclassified issue; test prints summaries only.
+- **First results — dev, `openai/gpt-oss-120b`, low effort, `classify-v1`, 1 run, 115 issues (2026-11-11):**
+
+  | | R1 | Trust the form | Always "bug" |
+  |---|---|---|---|
+  | Coverage | 100% | 82.6% | 100% |
+  | Accuracy on answered | **63.5%** | 41.1% | 25.2% |
+  | Macro-F1 | **61.6%** | 44.0% | 40.3% |
+
+  | Answer key | bug | feature | question | docs | Recall |
+  |---|---|---|---|---|---|
+  | bug (29) | 28 | 1 | 0 | 0 | 96.6% |
+  | feature (29) | 4 | 24 | 1 | 0 | 82.8% |
+  | question (30) | **18** | 5 | 7 | 0 | **23.3%** |
+  | docs (27) | **11** | 1 | 1 | 14 | 51.9% |
+
+  - Frequency-weighted accuracy 85.1% (real traffic is mostly bugs; bug recall 96.6%). Precision: bug 45.9%, feature 77.4%, question 77.8%, docs 100%. Never `unclear` (coverage 100%). Gold 55.4% (n=92), silver 95.7% (n=23). 0 failures; mean 1,252 tokens/call; p50 2.7s, p95 3.9s; $0.026 (~$0.23 per 1,000 issues).
+  - **The split that explains it:** issues the maintainer **kept** as the reporter filed them: **95% (57/60)**; issues the maintainer **relabelled**: **29% (16/55)**.
+  - **Finding — construct validity.** The misclassified questions and docs issues are **written as bug reports** ("does not accept…", "not called…", "broken…", "ignored…"); a maintainer relabelled them after **diagnosing** that the behaviour is intended (→ question: usage; → docs: intended but undocumented). R1 is designed to decide **what the reporter is asking**; pydantic's final label records **what the issue is after expert diagnosis**, which needs knowledge of intended behaviour that is **not in the issue text**. The answer key partly measures a different concept from R1's job, and nearly all errors are in that gap. Tuning the prompt until the relabelled issues come out right would be overfitting (module 10).
+  - **Options for module 12 (to decide):** (A) keep R1 = "what the reporter is asking"; report agreement on non-relabelled issues as R1's accuracy and the relabelled ones as a known limit — diagnosis belongs to knowledge-based steps (R2 similar issues, slice 5; R5 grounded docs answers, slice 6). (B) make R1 predict the diagnosis — likely to plateau without retrieval. (C) let R1 abstain (`unclear`) on "behaves unexpectedly, may be intended" issues and measure whether abstention catches the relabelled ones. *Recommended: A now, C as the module 12 experiment.*
+  - The test split is untouched until module 12's tuning is done.
+- **Module 12 decisions and findings (2026-11-20):**
+  - **Option A decided:** R1 decides *what the reporter is asking*. Its accuracy is reported on issues the maintainer **kept as filed (95.0%, n=60)**; the relabelled issues (29.1%, n=55) are a **known limit** — diagnosing "intended behaviour" belongs to R2 / R5. **Option C** (abstain on "maybe intended") is the experiment (12c).
+  - **Calibration (12b, from the cached dev predictions, no new calls):** confidence is **not usable**. It took only 6 values (0.85–0.99); 110 of 115 answers were ≥ 0.95 yet only 65% of those were right; **ECE 0.336**; mean confidence 0.976 when right vs **0.962 when wrong**. Calibration (0.97 means 65%) could be re-mapped afterwards; **discrimination** (higher when right) can't — and it's absent. The confidence is *verbalised* (a number the model writes in the JSON), not a computed probability. A "human review below 0.7" rule would have caught **none** of the 40 wrong answers. **Decision:** routing uses `type == "unclear"` only; `confidence` stays displayed but must not drive rules. Usable uncertainty would need token probabilities (not verified as available for this model on Groq), self-consistency (3–5× calls — unaffordable at 200k tokens/day), or explicit abstention (experiment C).
+  - **Experiment C, `classify-v2` (12c, 2026-11-20).** *Setup:* a feature flag `CLASSIFY_PROMPT_VERSION` (default `classify-v1`; the live bot changes only after a version wins); v2 = v1's system prompt + a generic rule ("if you cannot tell from the text whether it is a defect or intended behaviour they misunderstand, answer `unclear`; `bug` only for clearly wrong behaviour…"). *Success criteria fixed before running (pre-registration):* (1) `unclear` share on relabelled ≥ 30 points above kept; (2) coverage on kept ≥ 85%; (3) accuracy on answered kept ≥ 93%. *Quick sample:* the first 40 dev issues in hash order (`--limit 40`), v1 re-scored on the same 40 from cache.
+
+    | Same 40 dev issues | v1 | v2 |
+    |---|---|---|
+    | `unclear` answers | 0 | **0** |
+    | Accuracy on answered — kept (24) | 91.7% | 91.7% |
+    | Accuracy on answered — relabelled (16) | 25.0% | 37.5% |
+    | Accuracy on answered — all | 65.0% | 70.0% |
+
+    **v2 fails criterion 1** — the rule produced no abstention at all. The +5 points overall is 2 issues of 40 with no run-to-run variance measured, and not what v2 was for; it is **not** counted as a win (moving the goalposts). v2 not deployed. *Hypotheses:* the shared `type` field description still defines `unclear` as "mixes several types, or too little information" and may override the system prompt; instruction-tuned models resist abstaining; low reasoning effort.
+  - **`classify-v3`** tested hypothesis 1: the same rule also in the `type` field description (a subclass schema, so v1's stays unchanged; same criteria, same 40 issues).
+
+    | Same 40 dev issues | v1 | v2 | v3 |
+    |---|---|---|---|
+    | `unclear` answers | 0 | 0 | **0** |
+    | Accuracy on answered — kept (24) | 91.7% | 91.7% | **87.5%** |
+    | Accuracy on answered — relabelled (16) | 25.0% | 37.5% | 50.0% |
+    | Accuracy on answered — all | 65.0% | 70.0% | 72.5% |
+
+    **Fails criteria 1 and 3** and triggers the agreed stopping rule (< 5 abstentions). **Experiment C is closed:** with this model, stating the rule consistently in prompt and schema produces no abstention. v1 stays live. The relabelled gain (4 of 16, one run) came with a loss on kept issues — a shift away from "bug", not abstention; it would need its own pre-registered experiment.
+  - **Two bugs found while running v3 — both about what the model sees:**
+    - *The schema's docstring is the tool description.* LangChain sends a structured-output schema as a tool: class title → tool **name**, docstring → tool **description**. v3's first version had developer notes in its docstring ("classify-v3: v2 made no abstention…"), so the model called non-existent tools (`classify-v3`, `classify_v1`…) → 400 errors on 13 of 40 calls. Fix: same title and docstring as v1, notes as `#` comments; a test compares the tool name and description with v1's. The 27 answers made with the leaked docstring were set aside (`…classify-v3.leaked-docstring.jsonl.invalid`), not reused — they came from a different prompt.
+    - *Failures vs abstentions paid off.* The 13 rejected calls were reported and not scored. With the graph's fallback they would have been 13 `unclear` answers — and v3 would have looked like a success.
+  - **Final measurement — test split, `classify-v1`, 1 run, 122 issues (2026-11-21):**
+
+    | | dev (115) | test (122) |
+    |---|---|---|
+    | Accuracy on answered | 63.5% | **62.5%** |
+    | Macro-F1 | 61.6% | **60.0%** |
+    | Coverage | 100% | **98.4%** (2 × `unclear`, both features) |
+    | Kept as filed | 95.0% (n=60) | **88.9%** (63 answered of 65) |
+    | Relabelled | 29.1% (n=55) | **33.3%** (n=57) |
+    | Trust the form / always bug | 41.1% / 25.2% | 44.2% / 25.4% |
+    | Question recall | 23.3% | 16.7% (24 of 30 → bug) |
+    | ECE; confidence right vs wrong | 0.336; 0.976 vs 0.962 | 0.342; 0.976 vs 0.952 |
+    | Cost; p50 latency | $0.23/1k; 2.7s | $0.22/1k; 2.6s |
+
+    Every dev finding holds on test (beats both baselines; the "written as a bug report" failure on questions/docs; unusable confidence), so none was an artefact of the dev split. **Kept-as-filed fell 95.0% → 88.9%** (3/60 → 7/63 wrong) — within the roughly ±8-point uncertainty of a single run on ~60 issues; the **test number is the one reported**. Logged in `evals/pydantic/test_runs.jsonl` (first and only test run). The test split has now been used once; any further prompt change must be re-measured on dev first and a new test run logged.
+  - **Outcome of 12c:** option A is R1's result: **88.9% on issues kept as filed (test; dev 95.0%)**, relabelled issues are a known limit for knowledge-based steps (R2, R5). The routing rule stays `type == "unclear"` → human, knowing the model rarely uses it.
 
 ### R2. Duplicate finder
 - **Input:** the new issue (title, body, and any error text), plus the index of past issues.
@@ -168,6 +282,13 @@ class Completeness(BaseModel):
   - **Second run (2026-11-04, same model and prompt):** 11/15 exact, **1 false nag (same sample, repeated) + 1 missed ask**: `bug_crash_no_logs.json` logs `ok` although no error text is given — the first run got this right. **Run-to-run variation**: the slice 4 eval must use repeated runs (or many samples), not single results.
   - **Known gap — comments aren't read** (found 2026-11-06 while designing the stale check): R3 sees only the issue title and body. If the reporter already gave the version (or logs) **in a comment before triage**, R3 still marks it missing and the bot asks for it again — a false nag. **Planned for R3 v2 (slice 4, module 12):** include the **reporter's own comments** in the completeness input (sanitised, truncated, delimited like the body). The stale check covers the *after*-triage case; this covers *before*.
   - **Decision:** record now; fix with real data in slice 4 rather than tuning the prompt on one sample. Candidate fix to test then: tighten the `logs` description — *"missing only when an error, exception or crash is explicitly described; wrong output alone → not_needed; if error text or a traceback is included → ok"* — bump to `completeness-v2`, and check it removes false nags **without** creating missed asks (e.g. `bug_crash_no_logs.json`).
+- **Hand-labelled answer key (slice 4 module 12d, `evaluation/completeness_labels.py`, prepared 2026-11-20):**
+  - *Why by hand:* no pydantic label says whether a report gives its version, reproduction or error output.
+  - *Which issues:* "bug-shaped" eval issues — answer key bug, **or filed with the bug form** (R1 sends most of those to R3, so that's what R3 really sees): 160 in the eval set. 152 use pydantic's full bug template, 143 contain a `pydantic version:` line — most reports are complete. A random 50 would hold too few "missing" cases to measure, so the sample is **enriched**: all 17 without a version line, then the rest in a fixed random order — **25 dev + 25 test**. Results will be **per field** (does R3 ask when the version is missing? does it stay quiet when it's there?), never "x% of pydantic reports are complete".
+  - *A correlation bug, caught on the real data:* the first version picked "the first 50 by `split_key`" and got 42 dev / 8 test — the split itself had put the lower `split_key` half of each stratum in dev. **Reusing a random key for a second choice makes the two choices correlated**; selection now takes 25 per split and orders by a separately salted hash.
+  - *Labelling rules fixed before labelling:* `evals/pydantic/COMPLETENESS_LABELLING.md` — same definitions as R3's fields, plus pydantic edge cases decided in advance (Python version alone ≠ version; code only behind a link or in a screenshot → repro `vague`; error shown as a code comment → logs `ok`). **Title + body only** (what R3 sees when an issue is opened). **Blind:** no R3 output, labels or comments seen before labelling (anchoring). `unsure` flag + note, reported separately. Optional self-consistency re-label of 5 issues.
+  - *Files:* `evals/pydantic/completeness_labels.csv` (the labels, committed — no issue text) and `DATA_DIR/eval/completeness_to_label.md` (the 50 issues to read, local). `debug_helper_scripts/completeness_labelling.py --create` (refuses to overwrite the sheet) / `--check` (validates, shows progress).
+  - *Comments as input (the module 6 idea) are out of scope here:* at "issue opened" there are no comments; they matter for re-triage and would need their own labels.
 
 ### R4. Reproduction (sandbox) — via Agent
 - **Input:** issue title + body, R1 type, R3 completeness.

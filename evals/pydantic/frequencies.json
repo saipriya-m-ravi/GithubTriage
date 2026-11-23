@@ -1,0 +1,11 @@
+{
+  "repo": "pydantic/pydantic",
+  "created_since": "2024-01-01",
+  "counted_at": "2026-11-10T16:47:30+00:00",
+  "closed_issues_per_type": {
+    "bug": 1112,
+    "feature": 274,
+    "question": 157,
+    "docs": 72
+  }
+}

@@ -3,7 +3,6 @@ import os
 import pytest
 
 from githubtriage.config import Settings
-from githubtriage.nodes.classify import PROMPT_VERSION as CLASSIFY_VERSION
 from githubtriage.nodes.completeness import PROMPT_VERSION as COMPLETENESS_VERSION
 from githubtriage.observability import (
     TracingConfigError,
@@ -55,6 +54,15 @@ def test_run_config_carries_governance_metadata():
     assert config["metadata"]["model"] == "m-1"
     assert config["metadata"]["reasoning_effort"] == "default"
     assert config["metadata"]["prompt_versions"] == {
-        "classify": CLASSIFY_VERSION,
+        "classify": "classify-v1",  # the default
         "completeness": COMPLETENESS_VERSION,
     }
+
+
+def test_run_config_reports_the_active_classify_prompt(monkeypatch):
+    # The prompt version is a setting: a trace must say which one actually ran.
+    from githubtriage.config import settings
+
+    monkeypatch.setattr(settings, "classify_prompt_version", "classify-v2")
+    config = run_config("o/r", 1, model="m", source="cli")
+    assert config["metadata"]["prompt_versions"]["classify"] == "classify-v2"

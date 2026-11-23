@@ -143,6 +143,17 @@ class GitHubClient:
             if "pull_request" not in item:
                 yield item
 
+    def count_issues(self, query: str) -> int:
+        """How many issues match a search query, e.g. 'repo:o/r is:issue label:x'.
+
+        The search API has its own, lower rate limit (30/minute with a token,
+        10 anonymously), so use it for counts, not for collecting issues.
+        """
+        response = self._request(
+            "GET", "/search/issues", params={"q": query, "per_page": 1}
+        )
+        return response.json()["total_count"]
+
     def list_comments(
         self,
         repo: str,
@@ -162,6 +173,18 @@ class GitHubClient:
         if since:
             params["since"] = since
         yield from self._paginate(path, params, max_pages, complete=complete)
+
+    def list_issue_events(self, repo: str, number: int) -> Iterator[dict]:
+        """An issue's event history (labeled, unlabeled, closed...), oldest first.
+
+        Always complete (TruncatedError otherwise): a missing page could hide the
+        event where a maintainer relabelled the issue, and the eval's answer key
+        would be built on half the story.
+        """
+        path = f"/repos/{validate_repo(repo)}/issues/{number}/events"
+        yield from self._paginate(
+            path, {"per_page": 100}, DEFAULT_MAX_PAGES, complete=True
+        )
 
     def create_comment(self, repo: str, number: int, body: str) -> dict:
         """Post a comment. NOT retried on server/network errors (see module docstring)."""

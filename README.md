@@ -14,7 +14,7 @@ Built in 8 vertical slices, each adding one capability to a system that already 
 - ✅ **Slice 1:** classify an issue (one structured LLM call with prompt-injection guardrails) → template-based draft reply → CLI.
 - ✅ **Slice 2:** completeness check for bugs (conditional routing) → "please add…" requests from fixed, allowlisted wording.
 - ✅ **Slice 3:** human approval — the run pauses, survives restarts (SQLite checkpoints), and resumes on approve / edit / reject; posting is idempotent per run (tested through a simulated crash). Replies go to a local outbox until the GitHub API arrives in slice 4.
-- 🔄 **Slice 4:** live GitHub issues — triage by `owner/repo#N` or URL, real comments posted only to allowlisted repos (exactly once per run, author-verified marker), and stale drafts discarded if the issue was edited or commented on after triage. Tested against fake and **recorded, anonymised** GitHub responses. *Next: the first real eval set (pydantic/pydantic labels).*
+- 🔄 **Slice 4:** live GitHub issues — triage by `owner/repo#N` or URL, real comments posted only to allowlisted repos (exactly once per run, author-verified marker), and stale drafts discarded if the issue was edited or commented on after triage. Tested against fake and **recorded, anonymised** GitHub responses. **First real evaluation**: 237 closed pydantic issues with a maintainer-based answer key, a frozen dev/test split, and a cached, rate-limit-aware eval runner — see [Results](#results-so-far): **62.5% on the held-out test split (88.9% on issues kept as filed) vs 44.2% for trusting the reporter's form.** *R3 hand-labels are deferred.*
 - ⏳ Slices 5–8: duplicate finder (RAG), grounded answers, FastAPI service, reproduction agent.
 
 ## Running it
@@ -104,6 +104,16 @@ uv run python debug_helper_scripts/run_samples.py
 ```
 Compares each sample's classification with [samples/issues/expected.json](samples/issues/expected.json) and prints `OK` / `MISS` per sample plus a summary. Calls the LLM — costs tokens and results can vary slightly between runs.
 
+### Evaluate on real issues (pydantic/pydantic)
+The answer key is committed ([evals/pydantic/manifest.jsonl](evals/pydantic/manifest.jsonl): issue numbers and correct types, no issue text). Issue texts are fetched to a local, gitignored file:
+```bash
+uv run python debug_helper_scripts/backfill_eval.py --rebuild    # needs GITHUB_TOKEN; fetches the texts once
+uv run python debug_helper_scripts/run_eval.py --split dev       # calls the LLM; results are cached
+uv run python debug_helper_scripts/run_eval.py --split dev --show-errors
+uv run python debug_helper_scripts/run_eval.py --split test      # final measurement only: summary + logged
+```
+Every prediction is cached per configuration (model, reasoning effort, prompt version), so a run stopped by a rate limit resumes where it stopped and re-scoring is free. `--show-errors` works on dev only; complete test runs are appended to `evals/pydantic/test_runs.jsonl` (created by the first test run).
+
 ### Tests and checks
 ```bash
 uv run pytest              # all tests; uses a fake LLM, no network or API key needed
@@ -135,11 +145,16 @@ src/githubtriage/
   repo_names.py          the one owner/name validation rule
   observability.py       LangSmith tracing + run metadata
   cli.py                 command-line adapter
+  evaluation/            eval set + scoring: labels.py (answer key from label history),
+                         dataset.py (collection), split.py (dev/test), runner.py
+                         (cache, pacing), metrics.py, completeness_labels.py (R3 kit)
 tests/                   pytest suite (shared fakes in conftest.py)
 tests/fixtures/github/   recorded, anonymised GitHub responses
+evals/pydantic/          committed eval data: manifest, frequencies, test-run log, R3 labelling guide
 samples/issues/          sample issues + expected.json
-debug_helper_scripts/    run_samples.py, show_run.py, record_github_fixtures.py
-docs/DESIGN.md           design decisions, threat model
+debug_helper_scripts/    run_samples, show_run, record_github_fixtures, backfill_eval,
+                         run_eval, completeness_labelling
+docs/DESIGN.md           design decisions, threat model, eval results
 ```
 
 ## Design
@@ -177,10 +192,30 @@ GitHub webhook ──> FastAPI ──> job queue ──> LangGraph workflow (cod
 ```
 Routing is done by code, not an LLM supervisor — see [docs/DESIGN.md](docs/DESIGN.md) §4 for why.
 
+## Results so far
+
+**R1 classification on real pydantic issues** — `openai/gpt-oss-120b` (low reasoning effort), prompt `classify-v1`, one run.
+
+| Split | Issues | Accuracy | Macro-F1 | On issues the maintainer kept as filed | On issues the maintainer relabelled |
+|---|---|---|---|---|---|
+| dev (tuning) | 115 | 63.5% | 61.6% | 95.0% (n=60) | 29.1% (n=55) |
+| **test (measured once)** | 122 | **62.5%** | **60.0%** | **88.9%** (63 answered of 65) | 33.3% (n=57) |
+
+Baselines on the same test issues: **trusting the reporter's chosen form 44.2%** (and 0 of 60 questions across the whole set — not one question was filed as a question), **always "bug" 25.4%**. The test row is the result to quote; with ~60 issues per group, one run carries roughly ±8 points of uncertainty.
+
+What the numbers mean:
+- **The answer key** comes from each issue's label *history*, not its final label: pydantic's issue forms add labels automatically, so a label is trusted (gold) only when a maintainer applied or confirmed it.
+- **95% vs 29%.** Most misses are issues *written as bug reports* that a maintainer later diagnosed as intended behaviour (→ question) or a docs gap. R1 decides **what the reporter is asking**; that diagnosis needs knowledge the text doesn't contain, so it's a known limit for the knowledge-based steps (duplicates, docs-grounded answers).
+- **Confidence isn't usable for routing:** on test, 0.976 average when right vs 0.952 when wrong (ECE 0.342), so only `unclear` sends an issue to a human.
+- **An abstention experiment failed** by criteria fixed in advance (the model never said `unclear`) and wasn't shipped.
+- Cost ~$0.22 per 1,000 issues; p50 latency 2.6s. The binding constraint is the provider's rate limit, not money.
+
+Full method, caveats and decisions: [docs/DESIGN.md](docs/DESIGN.md) → R1 → "Eval ground truth" onwards.
+
 ### Metrics to be reported
-- Label accuracy / macro-F1 vs. maintainer labels
+- Label accuracy / macro-F1 vs. maintainer labels — *measured: test 62.5% / 60.0%, 88.9% on issues kept as filed (above)*
 - Duplicate detection recall@5
 - Response quality score (LLM-as-judge with a rubric, spot-checked by hand)
 - Tool-call correctness rate
-- p50/p95 latency and cost per issue, before and after optimization
+- p50/p95 latency and cost per issue, before and after optimization — *R1 (test): p50 2.6s, ~$0.22 per 1,000 issues*
 - Prompt-injection test pass rate

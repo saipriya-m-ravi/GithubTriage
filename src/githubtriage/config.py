@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # Only for reasoning models (e.g. gpt-oss: "low" / "medium" / "high").
     # None = don't send the parameter; the model uses its own default.
     groq_reasoning_effort: str | None = None
+    # Which R1 prompt is live (a feature flag): experiments run with a new
+    # version in the eval; production switches only after it has won.
+    classify_prompt_version: Literal["classify-v1", "classify-v2", "classify-v3"] = (
+        "classify-v1"
+    )
 
     # Optional: tracing sends data to a third party, so it is off unless enabled.
     langsmith_tracing: bool = False
