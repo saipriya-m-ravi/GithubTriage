@@ -34,6 +34,7 @@ def default_github_settings(monkeypatch):
 def default_prompt_versions(monkeypatch):
     """Tests run the default (live) prompt, whatever .env selects for experiments."""
     monkeypatch.setattr(settings, "classify_prompt_version", "classify-v1")
+    monkeypatch.setattr(settings, "completeness_prompt_version", "completeness-v1")
 
 
 @pytest.fixture(autouse=True)

@@ -3,7 +3,6 @@ import os
 import pytest
 
 from githubtriage.config import Settings
-from githubtriage.nodes.completeness import PROMPT_VERSION as COMPLETENESS_VERSION
 from githubtriage.observability import (
     TracingConfigError,
     configure_tracing,
@@ -55,7 +54,7 @@ def test_run_config_carries_governance_metadata():
     assert config["metadata"]["reasoning_effort"] == "default"
     assert config["metadata"]["prompt_versions"] == {
         "classify": "classify-v1",  # the default
-        "completeness": COMPLETENESS_VERSION,
+        "completeness": "completeness-v1",  # the default
     }
 
 

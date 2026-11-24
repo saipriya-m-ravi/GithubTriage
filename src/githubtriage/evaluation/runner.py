@@ -68,13 +68,15 @@ class PredictionStore:
     half line at the end, which is skipped on load (and that call is redone).
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, model: type[BaseModel] = Prediction):
+        # `model`: any prediction type with repo, number and run (R1's Prediction
+        # by default; R3's eval stores its own).
         self.path = path
         self._by_key: dict[tuple[str, int, int], Prediction] = {}
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 try:
-                    p = Prediction.model_validate_json(line)
+                    p = model.model_validate_json(line)
                 except ValidationError:
                     logger.warning("Skipping a damaged line in %s", path)
                     continue

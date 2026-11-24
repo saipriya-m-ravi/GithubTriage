@@ -12,9 +12,7 @@ import os
 
 from githubtriage.config import Settings
 from githubtriage.nodes import classify as classify_node
-from githubtriage.nodes.completeness import (
-    PROMPT_VERSION as COMPLETENESS_PROMPT_VERSION,
-)
+from githubtriage.nodes import completeness as completeness_node
 
 
 class TracingConfigError(RuntimeError):
@@ -68,7 +66,7 @@ def run_config(
             "prompt_versions": {
                 # Read at call time: it's a setting, so a v2 run must say v2.
                 "classify": classify_node.prompt_version(),
-                "completeness": COMPLETENESS_PROMPT_VERSION,
+                "completeness": completeness_node.prompt_version(),
             },
         },
     }

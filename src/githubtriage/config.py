@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     classify_prompt_version: Literal["classify-v1", "classify-v2", "classify-v3"] = (
         "classify-v1"
     )
+    completeness_prompt_version: Literal["completeness-v1", "completeness-v2"] = (
+        "completeness-v1"
+    )
 
     # Optional: tracing sends data to a third party, so it is off unless enabled.
     langsmith_tracing: bool = False

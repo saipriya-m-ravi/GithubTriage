@@ -289,6 +289,39 @@ class Completeness(BaseModel):
   - *Labelling rules fixed before labelling:* `evals/pydantic/COMPLETENESS_LABELLING.md` — same definitions as R3's fields, plus pydantic edge cases decided in advance (Python version alone ≠ version; code only behind a link or in a screenshot → repro `vague`; error shown as a code comment → logs `ok`). **Title + body only** (what R3 sees when an issue is opened). **Blind:** no R3 output, labels or comments seen before labelling (anchoring). `unsure` flag + note, reported separately. Optional self-consistency re-label of 5 issues.
   - *Files:* `evals/pydantic/completeness_labels.csv` (the labels, committed — no issue text) and `DATA_DIR/eval/completeness_to_label.md` (the 50 issues to read, local). `debug_helper_scripts/completeness_labelling.py --create` (refuses to overwrite the sheet) / `--check` (validates, shows progress).
   - *Comments as input (the module 6 idea) are out of scope here:* at "issue opened" there are no comments; they matter for re-triage and would need their own labels.
+  - *Label review before scoring (2026-11-24):* the first sheet had `repro_steps = not_needed` on 4 docs issues (the guide forbids it — R3 can't answer it) and `logs = not_needed` on rows whose body contains error text. Fixed with the labeller: 17 rows `logs → ok` (only those containing error text — a blanket "repro ok ⇒ logs ok" rule was rejected because it would have marked 23 issues with no error output as "logs given"), 4 docs rows `repro → ok`. The guide gained a rule for docs issues (repro = location + what's wrong). Final labels: version ok 43 / missing 6 / vague 1; repro ok 48 / missing 2; logs not_needed 30 / ok 18 / vague 2; 3 unsure.
+- **First R3 results — `completeness-v1`, dev, 24 of 25 issues, 1 run (2026-11-24, `run_completeness_eval.py`):**
+  - Two views per field: **exact** status agreement, and the **ask** view (the draft asks when the status is missing/vague): a **false nag** = R3 asks, the label says it's there; a **missed ask** = R3 is silent, the label says it's missing/vague.
+
+    | Field | Should ask | Asked | False nags | Missed asks |
+    |---|---|---|---|---|
+    | version | 4 | 6 | 2 | 0 |
+    | repro_steps | 0 | 8 | **8** | 0 |
+    | logs | 1 | 7 | **6** | 0 |
+
+    **13 of 24 replies would ask for something already given** (12 of 22 without the 2 unsure labels). **Missed asks: 0.** R3 over-asks: never misses, but its asks are mostly wrong.
+  - *Where:* repro `ok → vague` on 8 issues — 3 are docs issues (#9987, #10403, #8723), which reach R3 only because R1 calls them bugs (a **routing** limit, not R3's job); 5 are bug reports whose example code R3 judged not reproducible. logs: 4 × `not_needed → missing` (the slice 2 false nag: no error described, logs asked for anyway) and 2 × `ok → missing` (error text present but missed).
+  - *1 failure, not scored:* #13215 — the model returned the JSON without calling the tool (`tool_use_failed`); retried on the next run.
+  - *Caveats:* 24 issues, one run, **one labeller** — repro sufficiency is a judgement call, so some disagreements may be label errors; check a few before tuning. Enriched sample: per-field results only.
+  - *Repro review with the labeller (2026-11-24, dev only):* 4 repro disagreements opened side by side with R3's reason. **2 label errors** (#10086 code uses undefined functions; #9716 the error only appears in a deployed environment the code doesn't recreate) and #14183 (packaging issue, no steps) → `vague`. #12605 label stood. **R3 changed its own answer on 2 of 4 when asked again** (#12605, #14183: vague → ok) — run-to-run variation is real on borderline repro judgements. *Anchoring caveat:* these dev labels were changed after seeing R3's output, which nudges dev towards R3; the **test labels are untouched** (labelled blind), and the review went both ways.
+  - *Re-scored, dev 25/25:* false nags version 2 · **repro 5** (3 of them docs issues) · **logs 6**; missed asks 0; **11 of 25 replies ask for something already given**.
+  - **Experiment `completeness-v2` — set up and criteria fixed BEFORE any v2 result (2026-11-24):**
+    - *Change:* only the `logs` field description — `missing` **only** when an error/exception/crash is explicitly described without its text; `ok` when the error text appears anywhere (code block, code comment); `not_needed` for wrong value / unexpected behaviour; "do not ask for logs just because none are present". A `_CompletenessV2` subclass with **v1's title and docstring** (the tool name/description the model sees); version, repro and the system prompt unchanged. Feature flag `COMPLETENESS_PROMPT_VERSION` (default `completeness-v1`).
+    - *Measurement:* 25 dev issues, **2 runs each** of v1 and v2 (R3 changed its answer on 2 of 4 borderline issues when re-asked), judged on the **mean over the 2 runs**.
+    - *Success = all three:* (1) logs false nags **≤ 3** (v1 run 1: 6); (2) missed asks **≤ 1** in total (v1: 0); (3) version and repro false nags **no worse** than v1's mean.
+    - *Result (2026-11-24), mean of 2 runs, dev:*
+
+      | | v1 | v2 | Criterion | Met? |
+      |---|---|---|---|---|
+      | logs false nags | 6.0 (6, 6) | **3.5** (4, 3) | ≤ 3 | ❌ by 0.5 |
+      | missed asks, all fields | 0.5 | 0.5 | ≤ 1 | ✅ |
+      | version false nags | 2.0 | 1.5 | ≤ v1 | ✅ |
+      | repro false nags | 4.5 | 2.0 | ≤ v1 | ✅ |
+      | replies with a false nag (not a criterion) | 10.5 of 25 | 5.5 of 24 | — | — |
+
+      **v2 fails criterion 1 narrowly → not adopted (decision 2026-11-24); R3 stays `completeness-v1`.** It is a real improvement (logs nags 6 → 3.5, nagging replies roughly halved), but "3.5 is basically 3" is the reasoning pre-registration exists to stop, and running more times until it crosses the line would be **optional stopping**. Also seen: repro nags fell 4.5 → 2.0 although v2 didn't touch repro — run-to-run noise (or wording spill-over); a new error type `logs: ok → not_needed` on 3 issues (harmless for the reply — nothing asked — but not "more accurate"); 1 missed version ask (#14021). Failures (`tool_use_failed`, the model returned JSON without calling the tool): v1 1/50, v2 2/50, never scored; #13215 failed in 2 of 3 v1 calls.
+    - *If revisited:* a new pre-registered experiment with its own criteria (e.g. "replies with a false nag at least halved, no new missed asks") must be judged on evidence not yet looked at — i.e. the test split — since that idea was formed after seeing these dev results. The v2 schema stays in the code behind the flag, unused.
+  - *Next (earlier plan):* `completeness-v2` (tighter `logs` wording planned since slice 2, maybe repro) with success criteria fixed in advance (e.g. false nags at least halved, **no new missed asks**).
 
 ### R4. Reproduction (sandbox) — via Agent
 - **Input:** issue title + body, R1 type, R3 completeness.
