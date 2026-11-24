@@ -62,6 +62,8 @@ You are writing the **answer key** for R3, the completeness check. For each bug-
 
 *Never `not_needed`* for a bug report.
 
+**Docs issues filed with the bug form** (added 2026-11-24): "reproduce" means *can a maintainer find the problem*. `ok` = names the exact place (page, section, docstring) **and** what's wrong; `vague` = says the docs are wrong or confusing but not where or not what; `missing` = neither. Still never `not_needed` — R3 can't answer that for repro, so the label would always count as an R3 error. A link to the docs page is fine as the *location*, as long as what's wrong is described in the text.
+
 ## logs — the error output
 
 | Value | When | Examples |
