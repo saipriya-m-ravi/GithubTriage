@@ -204,21 +204,28 @@ def main() -> int:
 
     if args.split == "test":
         if complete and not run.stopped:
+
+            def summary(run_pairs):
+                return {
+                    **{
+                        f: {
+                            "exact": s.exact,
+                            "false_nags": s.false_nags,
+                            "missed_asks": s.missed_asks,
+                            "should_ask": s.should_ask,
+                            "asked": s.asked,
+                        }
+                        for f, s in score_all(run_pairs).items()
+                    },
+                    "replies_with_a_false_nag": reports_with_a_false_nag(run_pairs),
+                }
+
+            # Every run is logged (results are judged on the mean over runs).
             entry = {
                 "at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "config": cfg,
                 "n": len(pairs),
-                **{
-                    f: {
-                        "exact": s.exact,
-                        "false_nags": s.false_nags,
-                        "missed_asks": s.missed_asks,
-                        "should_ask": s.should_ask,
-                        "asked": s.asked,
-                    }
-                    for f, s in scores.items()
-                },
-                "replies_with_a_false_nag": reports_with_a_false_nag(pairs),
+                "runs": [summary(run_pairs) for run_pairs in runs],
             }
             with TEST_LOG.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")

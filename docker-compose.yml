@@ -1,0 +1,31 @@
+# Local Postgres + pgvector for the duplicate finder (slice 5).
+#
+#   docker compose up -d      start (first run downloads the image)
+#   docker compose ps         status / health
+#   docker compose down       stop (data is kept in the named volume)
+#   docker compose down -v    stop AND delete the data
+#
+# The password comes from .env (POSTGRES_PASSWORD); Compose refuses to start
+# without it, so no default password ever ends up in git or in use.
+
+services:
+  db:
+    # Pinned: everyone (and slice 7's deployment) runs the same database.
+    image: pgvector/pgvector:0.8.0-pg17
+    environment:
+      POSTGRES_USER: githubtriage
+      POSTGRES_DB: githubtriage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      # 127.0.0.1 only: reachable from this machine, not from the network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U githubtriage -d githubtriage"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

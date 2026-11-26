@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # but required by the commands that call GitHub — they check when they run.
     github_token: SecretStr | None = None
     github_api_url: str = "https://api.github.com"  # GitHub Enterprise, or tests
+    # Postgres + pgvector for the duplicate finder (slice 5). Optional overall —
+    # only R2 needs it — and a secret: the URL contains the password.
+    database_url: SecretStr | None = None
     # Where approved replies go. "outbox" (default) never touches GitHub; posting
     # publicly has to be switched on deliberately.
     post_mode: Literal["outbox", "github"] = "outbox"
