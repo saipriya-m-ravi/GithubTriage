@@ -247,6 +247,18 @@ class DuplicateVerdict(BaseModel):
     | hybrid (RRF) | 6.2% | **43.8%** | 58.3% | 85.4% |
 
     **Keyword search is nearly useless as built** (OR over all the issue's words matches the template text every pydantic issue shares — the hypothesis from the #11023 example, now measured), and **fusion makes vector search worse** (64.6% → 43.8%): with k=60, RRF rewards appearing in both lists, so the noisy keyword list pushes good vector hits down (e.g. #7954 → #6473: vector rank 1, hybrid rank 10). *Hybrid beats its halves only when both halves are decent.* The @50 ceiling (85%) shows the right issues are found; the ranking is the problem. 6 pairs are found by neither list.
+  - *Experiment: a common-word filter for the keyword query (2026-11-28).* **Cause:** Postgres's `ts_rank` has no IDF — every word weighs the same however common — so an OR query over a whole issue is dominated by words all issues share. **Fix (data-driven, not pydantic-specific):** `common_words()` measures each stemmed word's document frequency with `ts_stat` and the query leaves out words in more than `max_df` of the issues (statistics over the whole index — corpus statistics, not answers; in production the index only holds past issues). **Rule fixed before running:** keep keyword search only if **hybrid @5 beats vector-only @5 (64.6%) on dev**; otherwise Stage 1 is vector-only.
+
+    | dev recall@5 | keyword | vector | hybrid |
+    |---|---|---|---|
+    | every word (before) | 0.0% | 64.6% | 43.8% |
+    | max_df 1% (1,296 words left out) | 20.8% | 64.6% | 58.3% |
+    | max_df 2% (828) | **27.1%** | 64.6% | 56.2% |
+    | max_df 5% (411) | 22.9% | 64.6% | **60.4%** |
+    | max_df 10% (239) | 12.5% | 64.6% | 45.8% |
+
+    **Best hybrid 60.4% < 64.6% → the rule says vector-only.** Decision: **Stage 1 = vector search only**; the keyword code stays (with the filter) for a later, separately pre-registered experiment. Why not tune further: 60.4 vs 64.6 is 2 issues of 48 (noise either way), and trying more thresholds/weights would invite the multiple-comparisons trap. *Kept for later:* hybrid finds the target somewhere in its top 50 more often (91.7% vs 83.3%) — keyword search adds candidates, just not near the top; relevant if Stage 2 ever looks at more than 5.
+  - **Final Stage 1 measurement — test, 49 pairs, measured once (2026-11-28, `retrieval_test_runs.jsonl`):** **vector-only recall@5 67.3%** (@1 44.9%, @10 77.6%, @50 81.6%) vs dev 64.6%. For the record, with the dev-best filter (max_df 5%): hybrid 59.2% @5, keyword 14.3% — hybrid loses on test too, so the dev decision wasn't luck of the split. **The number to quote: the true duplicate is among Stage 1's top 5 candidates for about two-thirds of real pydantic duplicates**; Stage 2 can't do better than that ceiling.
 - **Eval metric:**
   - Stage 1: recall@5 (is the true duplicate among the candidates?). Ground truth is free: issues maintainers closed as "Duplicate of #N".
   - Stage 2: precision on `duplicate_of`, reported together with the dataset composition.

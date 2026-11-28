@@ -69,6 +69,7 @@ KEYWORD_SQL = """
 WITH q AS (
     SELECT to_tsquery('simple', string_agg(quote_literal(lexeme), ' | ')) AS query
     FROM unnest(tsvector_to_array(to_tsvector('english', %(text)s))) AS lexeme
+    WHERE lexeme <> ALL(%(common)s)  -- too common to tell issues apart
 )
 SELECT i.number
 FROM issues i, q
@@ -99,6 +100,31 @@ FROM issues WHERE repo = %(repo)s AND number = ANY(%(numbers)s)
 """
 
 
+COMMON_WORDS_SQL = """
+SELECT word FROM ts_stat(
+    'SELECT search FROM issues WHERE repo = ' || quote_literal(%(repo)s)
+)
+WHERE ndoc > %(max_df)s * (SELECT count(*) FROM issues WHERE repo = %(repo)s)
+"""
+
+
+def common_words(conn, repo: str, max_df: float) -> list[str]:
+    """Stemmed words that appear in more than `max_df` of the repo's issues.
+
+    Postgres's ts_rank has no IDF (it weighs every word the same, however
+    common), so an OR query over a whole issue is dominated by words every
+    issue shares — template headings, "version", "confirm"… — and finds
+    nothing useful (dev recall@5: 0%). Leaving out the most common words is a
+    data-driven stand-in for IDF; `max_df` is tuned on dev.
+
+    Computed over the whole index, so for an old query it includes later
+    issues' statistics — corpus statistics, not answers; in production the
+    index only holds past issues.
+    """
+    rows = conn.execute(COMMON_WORDS_SQL, {"repo": repo, "max_df": max_df}).fetchall()
+    return [word for (word,) in rows]
+
+
 def ranked_lists(
     conn,
     embedder: Embedder,
@@ -108,6 +134,7 @@ def ranked_lists(
     before: datetime,
     exclude_number: int | None,
     per_list: int = 50,
+    common: Sequence[str] = (),
 ) -> tuple[list[int], list[int]]:
     """(keyword ranking, vector ranking): issue numbers, best first, each list
     already filtered by the time-travel rule. The eval scores each list on its
@@ -123,6 +150,7 @@ def ranked_lists(
         "limit": per_list,
         "text": text,
         "model": embedder.model,
+        "common": list(common),
     }
     with conn.transaction():
         keyword = [n for (n,) in conn.execute(KEYWORD_SQL, params).fetchall()]

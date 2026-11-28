@@ -212,7 +212,9 @@ What the numbers mean:
 
 **R3 completeness check** (`completeness-v1`) against 50 hand-labelled bug reports (25 dev / 25 test, labelled blind): on the test split, **6 of 25 replies would ask for something the reporter already gave** (mostly repro steps), and **1 missed ask** — R3 errs towards asking. A tighter `logs` wording halved nagging replies on dev but missed its pre-registered bar, so it wasn't adopted. About 1 call in 10 fails to produce structured output (counted, not scored; a retry is planned).
 
-Full method, caveats and decisions: [docs/DESIGN.md](docs/DESIGN.md) → R1 → "Eval ground truth" onwards, and R3.
+**R2 duplicate finder, Stage 1 (retrieval)** on 97 real duplicate pairs from pydantic (GitHub's "closed as duplicate of", 48 dev / 49 test), searching only issues created *before* each duplicate: the true duplicate is among the **top 5 candidates for 67.3%** of test pairs (vector search). Keyword search and hybrid (RRF) fusion were measured and lost — Postgres's ranking has no IDF, so even with a common-word filter the keyword list mostly added noise near the top.
+
+Full method, caveats and decisions: [docs/DESIGN.md](docs/DESIGN.md) → R1 → "Eval ground truth" onwards, R2 and R3.
 
 ### Metrics to be reported
 - Label accuracy / macro-F1 vs. maintainer labels — *measured: test 62.5% / 60.0%, 88.9% on issues kept as filed (above)*

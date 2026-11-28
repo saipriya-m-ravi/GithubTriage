@@ -171,6 +171,27 @@ def test_never_returns_the_issue_itself(indexed_conn):
 
 
 @needs_db
+def test_common_words_are_measured_and_left_out(indexed_conn):
+    from githubtriage.search import common_words, ranked_lists
+
+    # "nest" (nested) appears in 2 of the 4 issues; "union" in 2; "custom" in 1.
+    common = common_words(indexed_conn, "t/search", max_df=0.4)
+    assert "nest" in common and "custom" not in common
+
+    # A query made ONLY of common words now has no keyword query at all.
+    keyword, _ = ranked_lists(
+        indexed_conn,
+        TopicEmbedder(),
+        repo="t/search",
+        text="nested union",
+        before=datetime(2026, 1, 1, tzinfo=UTC),
+        exclude_number=99,
+        common=common,
+    )
+    assert keyword == []
+
+
+@needs_db
 def test_a_long_issue_still_matches_by_its_words(indexed_conn):
     # Plain query parsers AND every word: a long issue would match nothing.
     long_text = "Custom serializer ignored. " + "Lots of unrelated words here. " * 50

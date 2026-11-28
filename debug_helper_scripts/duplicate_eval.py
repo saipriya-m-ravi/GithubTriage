@@ -35,7 +35,7 @@ from githubtriage.evaluation.duplicates import (
 from githubtriage.evaluation.retrieval import VARIANTS, recall_at, target_ranks
 from githubtriage.github_client import GitHubClient
 from githubtriage.issue_index import FastEmbedder, embed_text
-from githubtriage.search import ranked_lists
+from githubtriage.search import common_words, ranked_lists
 
 REPO = "pydantic/pydantic"
 EVALS = Path("evals/pydantic")
@@ -94,7 +94,7 @@ def build(force: bool) -> int:
     return 0
 
 
-def evaluate(split: str, show_misses: bool) -> int:
+def evaluate(split: str, show_misses: bool, max_df: float | None) -> int:
     pairs = [p for p in read_pairs() if p.split == split]
     if not pairs:
         print(f"no {split} pairs — run --build first", file=sys.stderr)
@@ -102,6 +102,12 @@ def evaluate(split: str, show_misses: bool) -> int:
     embedder = FastEmbedder()
     ranks = []
     with connect() as conn:
+        common = common_words(conn, REPO, max_df) if max_df is not None else []
+        print(
+            f"keyword query leaves out {len(common)} words in > {max_df:.0%} of issues"
+            if max_df is not None
+            else "keyword query uses every word (no common-word filter)"
+        )
         for p in pairs:
             row = conn.execute(
                 "SELECT title, body FROM issues WHERE repo = %s AND number = %s",
@@ -115,6 +121,7 @@ def evaluate(split: str, show_misses: bool) -> int:
                 text=text,
                 before=p.duplicate_created_at,
                 exclude_number=p.duplicate,
+                common=common,
             )
             ranks.append(target_ranks(p.duplicate, p.target, keyword, vector))
 
@@ -142,6 +149,7 @@ def evaluate(split: str, show_misses: bool) -> int:
         entry = {
             "at": datetime.now(UTC).isoformat(timespec="seconds"),
             "n": len(ranks),
+            "max_df": max_df,
             "recall": results,
         }
         with TEST_LOG.open("a", encoding="utf-8") as f:
@@ -177,6 +185,11 @@ def main() -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--split", choices=["dev", "test"])
     parser.add_argument("--show-misses", action="store_true")
+    parser.add_argument(
+        "--max-df",
+        type=float,
+        help="leave words in more than this share of issues out of the keyword query",
+    )
     args = parser.parse_args()
     if args.build:
         return build(args.force)
@@ -185,7 +198,7 @@ def main() -> int:
     if args.show_misses and args.split == "test":
         print("--show-misses is dev-only.", file=sys.stderr)
         return 1
-    return evaluate(args.split, args.show_misses)
+    return evaluate(args.split, args.show_misses, args.max_df)
 
 
 if __name__ == "__main__":
