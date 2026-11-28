@@ -266,6 +266,47 @@ def test_list_issue_events_is_always_complete(monkeypatch):
         list(gh.list_issue_events("owner/repo", 7))
 
 
+def test_graphql_query_returns_data():
+    fake = FakeGitHub(
+        ok({"data": {"repository": {"a": {"duplicateOf": {"number": 9}}}}})
+    )
+    with client(fake) as gh:
+        data = gh.graphql_query(
+            '{ repository(owner: "o", name: "r") { a: issue(number: 1) { duplicateOf { number } } } }'
+        )
+    assert data["repository"]["a"]["duplicateOf"]["number"] == 9
+    assert fake.requests[0].url.path == "/graphql"
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["mutation { closeIssue(input: {}) { clientMutationId } }", "  subscription { x }"],
+)
+def test_graphql_refuses_writes(query):
+    # Queries are retried (they only read); a retried mutation could write twice.
+    fake = FakeGitHub()
+    with client(fake) as gh, pytest.raises(ValueError, match="only GraphQL queries"):
+        gh.graphql_query(query)
+    assert fake.requests == []  # refused before sending anything
+
+
+def test_graphql_errors_in_a_200_response_raise():
+    # GraphQL reports problems INSIDE a 200 body — possibly with partial data.
+    from githubtriage.github_client import GitHubError
+
+    fake = FakeGitHub(ok({"data": {"a": None}, "errors": [{"message": "not found"}]}))
+    with client(fake) as gh, pytest.raises(GitHubError, match="not found"):
+        gh.graphql_query("{ a }")
+
+
+def test_graphql_query_is_retried_on_server_errors():
+    # Unlike create_comment's POST, a query is marked safe to repeat.
+    fake = FakeGitHub(httpx.Response(502), ok({"data": {"x": 1}}))
+    with client(fake) as gh:
+        assert gh.graphql_query("{ x }") == {"x": 1}
+    assert len(fake.requests) == 2
+
+
 def test_get_authenticated_login():
     fake = FakeGitHub(ok({"login": "triage-bot", "id": 1}))
     with client(fake) as gh:

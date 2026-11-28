@@ -186,6 +186,33 @@ class GitHubClient:
             path, {"per_page": 100}, DEFAULT_MAX_PAGES, complete=True
         )
 
+    def graphql_query(self, query: str, variables: dict | None = None) -> dict:
+        """Run a read-only GraphQL query; return its `data`.
+
+        Used only to build eval data (the REST API doesn't expose `duplicateOf`).
+        - Queries only: a mutation WRITES, and this method retries (a query is
+          a read, so repeating it is harmless) — so mutations are refused.
+        - GraphQL reports errors inside a 200 response ({"errors": [...]}),
+          possibly next to partial data. Any error raises: a silently partial
+          answer would quietly drop pairs from an answer key.
+        """
+        head = query.lstrip()
+        if not head.startswith(("{", "query")):
+            raise ValueError(
+                "only GraphQL queries are allowed (no mutation/subscription)"
+            )
+        response = self._request(
+            "POST",
+            "/graphql",
+            safe=True,
+            json={"query": query, "variables": variables or {}},
+        )
+        body = response.json()
+        if body.get("errors"):
+            messages = "; ".join(e.get("message", "?") for e in body["errors"])[:500]
+            raise GitHubError(f"GraphQL query failed: {messages}")
+        return body["data"]
+
     def create_comment(self, repo: str, number: int, body: str) -> dict:
         """Post a comment. NOT retried on server/network errors (see module docstring)."""
         path = f"/repos/{validate_repo(repo)}/issues/{number}/comments"
@@ -209,13 +236,21 @@ class GitHubClient:
             raise TruncatedError(f"{path}: more than {max_pages} pages")
         logger.warning("Stopped after %s pages of %s (more available)", max_pages, path)
 
-    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    def _request(
+        self, method: str, url: str, *, safe: bool | None = None, **kwargs
+    ) -> httpx.Response:
+        # safe = repeating the request can't change anything (a read). Only safe
+        # requests are retried on server/network errors. GET is safe by default;
+        # a POST is not (it may have created a comment) unless the caller says
+        # so — e.g. a GraphQL *query*, which only reads.
+        if safe is None:
+            safe = method == "GET"
         for attempt in range(self._max_retries + 1):
             last_attempt = attempt == self._max_retries
             try:
                 response = self._http.request(method, url, **kwargs)
             except httpx.TransportError as e:  # connection reset, timeout, DNS...
-                if method == "GET" and not last_attempt:
+                if safe and not last_attempt:
                     self._backoff(attempt, f"network error ({type(e).__name__})")
                     continue
                 raise GitHubError(f"{method} {url}: network error: {e}") from e
@@ -233,7 +268,7 @@ class GitHubClient:
                 self._sleep(wait)
                 continue
 
-            if response.status_code >= 500 and method == "GET" and not last_attempt:
+            if response.status_code >= 500 and safe and not last_attempt:
                 self._backoff(attempt, f"server error {response.status_code}")
                 continue
 

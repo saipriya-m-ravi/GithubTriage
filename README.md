@@ -210,7 +210,9 @@ What the numbers mean:
 - **An abstention experiment failed** by criteria fixed in advance (the model never said `unclear`) and wasn't shipped.
 - Cost ~$0.22 per 1,000 issues; p50 latency 2.6s. The binding constraint is the provider's rate limit, not money.
 
-Full method, caveats and decisions: [docs/DESIGN.md](docs/DESIGN.md) → R1 → "Eval ground truth" onwards.
+**R3 completeness check** (`completeness-v1`) against 50 hand-labelled bug reports (25 dev / 25 test, labelled blind): on the test split, **6 of 25 replies would ask for something the reporter already gave** (mostly repro steps), and **1 missed ask** — R3 errs towards asking. A tighter `logs` wording halved nagging replies on dev but missed its pre-registered bar, so it wasn't adopted. About 1 call in 10 fails to produce structured output (counted, not scored; a retry is planned).
+
+Full method, caveats and decisions: [docs/DESIGN.md](docs/DESIGN.md) → R1 → "Eval ground truth" onwards, and R3.
 
 ### Metrics to be reported
 - Label accuracy / macro-F1 vs. maintainer labels — *measured: test 62.5% / 60.0%, 88.9% on issues kept as filed (above)*

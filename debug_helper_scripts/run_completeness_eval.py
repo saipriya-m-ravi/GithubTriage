@@ -52,6 +52,13 @@ def main() -> int:
     # 2 for v1-vs-v2 comparisons (decided 2026-11-24): R3 changed its answer on
     # 2 of 4 borderline issues when asked again, so one run mostly measures noise.
     parser.add_argument("--runs", type=int, default=1)
+    # For a test run where a call fails CONSISTENTLY (decided case by case): log
+    # it anyway, with the missing (issue, run) pairs named in the log entry.
+    parser.add_argument(
+        "--accept-missing",
+        action="store_true",
+        help="log an incomplete test run, recording exactly what is missing",
+    )
     parser.add_argument("--tokens-per-minute", type=int, default=7000)
     parser.add_argument("--show-errors", action="store_true", help="dev only")
     args = parser.parse_args()
@@ -203,7 +210,13 @@ def main() -> int:
                 )
 
     if args.split == "test":
-        if complete and not run.stopped:
+        missing = [
+            f"{label.repo}#{label.number} run {r}"
+            for r in range(1, args.runs + 1)
+            for label in labels
+            if store.get(label.repo, label.number, r) is None
+        ]
+        if (complete or args.accept_missing) and not run.stopped:
 
             def summary(run_pairs):
                 return {
@@ -226,6 +239,7 @@ def main() -> int:
                 "config": cfg,
                 "n": len(pairs),
                 "runs": [summary(run_pairs) for run_pairs in runs],
+                "missing": missing,  # explicit: never a silent gap
             }
             with TEST_LOG.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
